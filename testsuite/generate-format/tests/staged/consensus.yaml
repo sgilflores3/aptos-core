@@ -344,6 +344,13 @@ MultiEd25519PublicKey:
   NEWTYPESTRUCT: BYTES
 MultiEd25519Signature:
   NEWTYPESTRUCT: BYTES
+Multisig:
+  STRUCT:
+    - multisig_address:
+        TYPENAME: AccountAddress
+    - transaction_payload:
+        OPTION:
+          TYPENAME: EntryFunction
 Payload:
   ENUM:
     0:
@@ -562,6 +569,10 @@ TransactionPayload:
       EntryFunction:
         NEWTYPE:
           TYPENAME: EntryFunction
+    3:
+      Multisig:
+        NEWTYPE:
+          TYPENAME: Multisig
 TwoChainTimeout:
   STRUCT:
     - epoch: U64

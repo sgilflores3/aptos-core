@@ -4,9 +4,8 @@
 use crate::{
     transaction::{
         DecodedTableData, DeleteModule, DeleteResource, DeleteTableItem, DeletedTableData,
-        ModuleBundlePayload, MultisigPayload, MultisigTransactionPayload,
-        StateCheckpointTransaction, UserTransactionRequestInner, WriteModule, WriteResource,
-        WriteTableItem,
+        ModuleBundlePayload, MultisigPayload, StateCheckpointTransaction,
+        UserTransactionRequestInner, WriteModule, WriteResource, WriteTableItem,
     },
     view::ViewRequest,
     Bytecode, DirectWriteSet, EntryFunctionId, EntryFunctionPayload, Event, HexEncodedBytes,
@@ -204,7 +203,7 @@ impl<'a, R: MoveResolverExt + ?Sized> MoveConverter<'a, R> {
                             .collect::<Result<_>>()?,
                     };
 
-                    Some(MultisigTransactionPayload {
+                    Some(EntryFunctionPayload {
                         arguments: json_args,
                         function: EntryFunctionId {
                             module: module.into(),
@@ -593,7 +592,7 @@ impl<'a, R: MoveResolverExt + ?Sized> MoveConverter<'a, R> {
             },
             TransactionPayload::MultisigPayload(multisig) => {
                 let transaction_payload = if let Some(payload) = multisig.transaction_payload {
-                    let MultisigTransactionPayload {
+                    let EntryFunctionPayload {
                         function,
                         type_arguments,
                         arguments,
@@ -619,7 +618,7 @@ impl<'a, R: MoveResolverExt + ?Sized> MoveConverter<'a, R> {
                         .iter()
                         .map(bcs::to_bytes)
                         .collect::<Result<_, bcs::Error>>()?;
-                    Some(aptos_types::transaction::MultisigTransactionPayload {
+                    Some(EntryFunction {
                         module: module.into(),
                         function: function.name.into(),
                         ty_args: type_arguments
