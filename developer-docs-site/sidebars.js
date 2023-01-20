@@ -118,19 +118,6 @@ const sidebars = {
     },
     {
       type: "category",
-      label: "Develop Locally",
-      link: { type: "doc", id: "nodes/local-testnet/index" },
-      collapsible: true,
-      collapsed: true,
-      items: [
-        "guides/local-testnet-dev-flow",
-        "nodes/local-testnet/run-a-local-testnet",
-        "nodes/local-testnet/using-cli-to-run-a-local-testnet",
-        "guides/running-a-local-multi-node-network",
-      ],
-    },
-    {
-      type: "category",
       label: "Write Move Smart Contracts",
       link: { type: "doc", id: "guides/move-guides/index" },
       collapsible: true,
@@ -178,6 +165,20 @@ const sidebars = {
 
       ],
     },  */
+    {
+      type: "category",
+      label: "Develop Locally",
+      link: { type: "doc", id: "nodes/local-testnet/index" },
+      collapsible: true,
+      collapsed: true,
+      items: [
+        "guides/local-testnet-dev-flow",
+        "nodes/local-testnet/run-a-local-testnet",
+        "nodes/local-testnet/using-cli-to-run-a-local-testnet",
+        "guides/running-a-local-multi-node-network",
+        "nodes/local-testnet/localnet-indexer",
+      ],
+    },
     {
       type: "category",
       label: "Install Validators",
