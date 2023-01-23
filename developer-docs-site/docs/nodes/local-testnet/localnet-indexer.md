@@ -19,7 +19,7 @@ See the [Indexing](../../guides/indexing.md) guide that describes the indexing c
 
 4. Create an `indexer_test` database in Postgres.
 
-TODO: How does this reconcilve with? `diesel migration run --database-url postgresql://localhost/postgres` on?
+TODO: How does this reconcile with? `diesel migration run --database-url postgresql://localhost/postgres` on?
 https://aptos.dev/nodes/indexer-fullnode/#set-up-database
 
 5. Install a database management tool, ex. [DBeaver](https://dbeaver.io/).
