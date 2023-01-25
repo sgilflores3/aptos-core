@@ -406,6 +406,7 @@ fn initialize_features(session: &mut SessionExt<impl MoveResolver>) {
         FeatureFlag::MULTI_ED25519_PK_VALIDATE_V2_NATIVES as u64,
         FeatureFlag::BLAKE2B_256_NATIVE as u64,
         FeatureFlag::RESOURCE_GROUPS as u64,
+        FeatureFlag::MULTISIG_ACCOUNTS as u64,
     ];
 
     let mut serialized_values = serialize_values(&vec![MoveValue::Signer(CORE_CODE_ADDRESS)]);

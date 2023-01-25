@@ -3,7 +3,10 @@
 
 use super::new_test_context;
 use aptos_api_test_context::{current_function_name, TestContext};
-use aptos_types::{account_address::AccountAddress, transaction::EntryFunction};
+use aptos_types::{
+    account_address::AccountAddress,
+    transaction::{EntryFunction, MultisigTransactionPayload},
+};
 use move_core_types::{
     ident_str,
     language_storage::{ModuleId, CORE_CODE_ADDRESS},
@@ -63,16 +66,17 @@ async fn test_multisig_transaction_to_update_owners() {
         .await;
 
     // Add owners 3 and 4.
-    let add_owners_payload = bcs::to_bytes(&EntryFunction {
-        module: ModuleId::new(CORE_CODE_ADDRESS, ident_str!("multisig_account").to_owned()),
-        function: ident_str!("add_owners").to_owned(),
-        ty_args: vec![],
-        args: serialize_values(&vec![MoveValue::vector_address(vec![
-            owner_account_3.address(),
-            owner_account_4.address(),
-        ])]),
-    })
-    .unwrap();
+    let add_owners_payload =
+        bcs::to_bytes(&MultisigTransactionPayload::EntryFunction(EntryFunction {
+            module: ModuleId::new(CORE_CODE_ADDRESS, ident_str!("multisig_account").to_owned()),
+            function: ident_str!("add_owners").to_owned(),
+            ty_args: vec![],
+            args: serialize_values(&vec![MoveValue::vector_address(vec![
+                owner_account_3.address(),
+                owner_account_4.address(),
+            ])]),
+        }))
+        .unwrap();
     context
         .create_multisig_transaction(owner_account_1, multisig_account, add_owners_payload)
         .await;
@@ -94,15 +98,16 @@ async fn test_multisig_transaction_to_update_owners() {
     expected_owners.sort();
     assert_eq!(expected_owners, owners);
 
-    let remove_owners_payload = bcs::to_bytes(&EntryFunction {
-        module: ModuleId::new(CORE_CODE_ADDRESS, ident_str!("multisig_account").to_owned()),
-        function: ident_str!("remove_owners").to_owned(),
-        ty_args: vec![],
-        args: serialize_values(&vec![MoveValue::vector_address(vec![
-            owner_account_4.address()
-        ])]),
-    })
-    .unwrap();
+    let remove_owners_payload =
+        bcs::to_bytes(&MultisigTransactionPayload::EntryFunction(EntryFunction {
+            module: ModuleId::new(CORE_CODE_ADDRESS, ident_str!("multisig_account").to_owned()),
+            function: ident_str!("remove_owners").to_owned(),
+            ty_args: vec![],
+            args: serialize_values(&vec![MoveValue::vector_address(vec![
+                owner_account_4.address()
+            ])]),
+        }))
+        .unwrap();
     context
         .create_multisig_transaction(owner_account_1, multisig_account, remove_owners_payload)
         .await;
@@ -121,6 +126,31 @@ async fn test_multisig_transaction_to_update_owners() {
     ];
     expected_owners.sort();
     assert_eq!(expected_owners, owners);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_multisig_transaction_with_insufficient_balance_to_cover_gas() {
+    let mut context = new_test_context(current_function_name!());
+    let owner_account_1 = &mut context.create_and_fund_account().await;
+    // Owner 2 has no APT balance.
+    let owner_account_2 = &mut context.gen_account();
+    let multisig_account = context
+        .create_multisig_account(
+            owner_account_1,
+            vec![owner_account_2.address()],
+            1,
+            1000, /* initial balance */
+        )
+        .await;
+
+    let multisig_payload = construct_multisig_txn_transfer_payload(owner_account_1.address(), 1000);
+    context
+        .create_multisig_transaction(owner_account_1, multisig_account, multisig_payload)
+        .await;
+    // Target transaction execution should fail because the owner 2 account has no balance for gas.
+    context
+        .execute_multisig_transaction(owner_account_2, multisig_account, 400)
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -260,6 +290,65 @@ async fn test_multisig_transaction_with_payload_not_matching_hash() {
         .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_multisig_transaction_simulation() {
+    let mut context = new_test_context(current_function_name!());
+    let owner_account_1 = &mut context.create_and_fund_account().await;
+    let owner_account_2 = &mut context.create_and_fund_account().await;
+    let owner_account_3 = &mut context.create_and_fund_account().await;
+    let multisig_account = context
+        .create_multisig_account(
+            owner_account_1,
+            vec![owner_account_2.address(), owner_account_3.address()],
+            2,    /* 2-of-3 */
+            1000, /* initial balance */
+        )
+        .await;
+
+    // Should be able to simulate the multisig tx without having enough approvals or the transaction
+    // created.
+    let simulation_resp = context
+        .simulate_multisig_transaction(
+            owner_account_1,
+            multisig_account,
+            "0x1::aptos_account::transfer",
+            &[],
+            &[&owner_account_1.address().to_hex_literal(), "1000"],
+            200,
+        )
+        .await;
+    // Validate that the simulation did successfully execute a transfer of 1000 coins from the
+    // multisig account.
+    let simulation_resp = &simulation_resp.as_array().unwrap()[0];
+    assert!(simulation_resp["success"].as_bool().unwrap());
+    let withdraw_event = &simulation_resp["events"].as_array().unwrap()[0];
+    assert_eq!(
+        withdraw_event["type"].as_str().unwrap(),
+        "0x1::coin::WithdrawEvent"
+    );
+    let withdraw_from_account = AccountAddress::from_hex_literal(
+        withdraw_event["guid"]["account_address"].as_str().unwrap(),
+    )
+    .unwrap();
+    let withdrawn_amount = withdraw_event["data"]["amount"].as_str().unwrap();
+    assert_eq!(withdraw_from_account, multisig_account);
+    assert_eq!(withdrawn_amount, "1000");
+
+    // Simulating transferring more than what the multisig account has should fail.
+    let simulation_resp = context
+        .simulate_multisig_transaction(
+            owner_account_1,
+            multisig_account,
+            "0x1::aptos_account::transfer",
+            &[],
+            &[&owner_account_1.address().to_hex_literal(), "2000"],
+            200,
+        )
+        .await;
+    let simulation_resp = &simulation_resp.as_array().unwrap()[0];
+    assert!(!simulation_resp["success"].as_bool().unwrap());
+}
+
 async fn get_owners(
     context: &TestContext,
     multisig_account: AccountAddress,
@@ -284,11 +373,11 @@ async fn get_owners(
 }
 
 fn construct_multisig_txn_transfer_payload(recipient: AccountAddress, amount: u64) -> Vec<u8> {
-    bcs::to_bytes(&EntryFunction {
+    bcs::to_bytes(&MultisigTransactionPayload::EntryFunction(EntryFunction {
         module: ModuleId::new(CORE_CODE_ADDRESS, ident_str!("aptos_account").to_owned()),
         function: ident_str!("transfer").to_owned(),
         ty_args: vec![],
         args: serialize_values(&vec![MoveValue::Address(recipient), MoveValue::U64(amount)]),
-    })
+    }))
     .unwrap()
 }

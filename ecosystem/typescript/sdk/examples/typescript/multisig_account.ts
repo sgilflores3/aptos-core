@@ -11,7 +11,8 @@ import assert from "assert";
 const NODE_URL = process.env.APTOS_NODE_URL || "https://fullnode.devnet.aptoslabs.com";
 const FAUCET_URL = process.env.APTOS_FAUCET_URL || "https://faucet.devnet.aptoslabs.com";
 
-const { AccountAddress, EntryFunction, MultiSig, TransactionPayloadMultisig } = TxnBuilderTypes;
+const { AccountAddress, EntryFunction, MultiSig, MultiSigTransactionPayload, TransactionPayloadMultisig } =
+  TxnBuilderTypes;
 
 /**
  * This code example demonstrates the new multisig account module and transaction execution flow.
@@ -48,12 +49,22 @@ const { AccountAddress, EntryFunction, MultiSig, TransactionPayloadMultisig } = 
 
   // Create a multisig transaction to send 1_000_000 coins to an account.
   const recipient = new AptosAccount();
-  const transferTxPayload = EntryFunction.natural(
-    "0x1::aptos_account",
-    "transfer",
-    [],
-    [BCS.bcsToBytes(AccountAddress.fromHex(recipient.address())), BCS.bcsSerializeUint64(1_000_000)],
+  const transferTxPayload = new MultiSigTransactionPayload(
+    EntryFunction.natural(
+      "0x1::aptos_account",
+      "transfer",
+      [],
+      [BCS.bcsToBytes(AccountAddress.fromHex(recipient.address())), BCS.bcsSerializeUint64(1_000_000)],
+    ),
   );
+  const multisigTxExecution = new TransactionPayloadMultisig(new MultiSig(AccountAddress.fromHex(multisigAddress)));
+  // We're not doing anything with the simulation response. This is just for demo purposes.
+  const [_simulationResp] = await client.simulateTransaction(
+    owner2,
+    await client.generateRawTransaction(owner2.address(), multisigTxExecution),
+  );
+
+  // Create the multisig tx on chain.
   const createMultisigTx = await client.generateTransaction(owner2.address(), {
     function: "0x1::multisig_account::create_transaction",
     type_arguments: [],
@@ -77,12 +88,6 @@ const { AccountAddress, EntryFunction, MultiSig, TransactionPayloadMultisig } = 
 
   // Owner 2 can now execute the transactions as it already has 2 approvals (from owners 2 and 3).
   // We'll simulate the tx first just to try it out.
-  const multisigTxExecution = new TransactionPayloadMultisig(new MultiSig(AccountAddress.fromHex(multisigAddress)));
-  // We're not doing anything with the simulation response. This is just for demo purposes.
-  const [_simulationResp] = await client.simulateTransaction(
-    owner2,
-    await client.generateRawTransaction(owner2.address(), multisigTxExecution),
-  );
   await client.generateSignSubmitWaitForTransaction(owner2, multisigTxExecution);
   let accountResource = await client.getAccountResource(recipient.address(), aptosCoinStore);
   let balance = parseInt((accountResource?.data as any).coin.value);
