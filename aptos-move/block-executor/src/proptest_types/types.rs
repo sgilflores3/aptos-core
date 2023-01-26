@@ -3,20 +3,18 @@
 
 use crate::{
     errors::{Error, Result},
-    scheduler::TxnIndex,
-    task::{
-        ExecutionStatus, ExecutorTask, ModulePath, Transaction as TransactionType,
-        TransactionOutput,
-    },
+    task::{ExecutionStatus, ExecutorTask, Transaction as TransactionType, TransactionOutput},
 };
 use aptos_aggregator::{
     delta_change_set::{delta_add, delta_sub, deserialize, serialize, DeltaOp},
     transaction::AggregatorValue,
 };
+use aptos_mvhashmap::types::TxnIndex;
 use aptos_state_view::{StateViewId, TStateView};
 use aptos_types::{
     access_path::AccessPath,
     account_address::AccountAddress,
+    executable::ModulePath,
     state_store::state_storage_usage::StateStorageUsage,
     write_set::{TransactionWrite, WriteOp},
 };
@@ -450,7 +448,7 @@ where
                 ))
             },
             Transaction::SkipRest => ExecutionStatus::SkipRest(Output(vec![], vec![], vec![])),
-            Transaction::Abort => ExecutionStatus::Abort(txn_idx),
+            Transaction::Abort => ExecutionStatus::Abort(txn_idx as usize),
         }
     }
 }

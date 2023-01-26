@@ -5,10 +5,9 @@ use crate::{
     executor::BlockExecutor,
     proptest_types::types::{DeltaDataView, ExpectedOutput, KeyType, Task, Transaction, ValueType},
     scheduler::{Scheduler, SchedulerTask},
-    task::ModulePath,
 };
 use aptos_aggregator::delta_change_set::{delta_add, delta_sub, DeltaOp, DeltaUpdate};
-use aptos_types::write_set::TransactionWrite;
+use aptos_types::{executable::ModulePath, write_set::TransactionWrite};
 use rand::random;
 use std::{
     fmt::Debug,
