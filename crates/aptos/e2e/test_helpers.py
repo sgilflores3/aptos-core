@@ -7,10 +7,10 @@ import pathlib
 import subprocess
 import traceback
 import typing
-
+from contextlib import contextmanager
 from dataclasses import dataclass
 
-from common import AccountInfo
+from common import AccountInfo, build_image_name, recursive_chmod
 
 LOG = logging.getLogger(__name__)
 
@@ -21,26 +21,29 @@ WORKING_DIR_IN_CONTAINER = "/tmp"
 @dataclass
 class RunHelper:
     host_working_directory: str
-    image_repo: str
+    image_repo_with_project: str
     image_tag: str
     cli_path: str
     passed_tests: typing.List[str]
     failed_tests: typing.List[str]
+    volume_name: str
 
-    def __init__(self, host_working_directory, image_repo, image_tag, cli_path):
+    def __init__(
+        self, host_working_directory, image_repo_with_project, image_tag, cli_path
+    ):
         if image_tag and cli_path:
             raise RuntimeError("Cannot specify both image_tag and cli_path")
         if not (image_tag or cli_path):
             raise RuntimeError("Must specify one of image_tag and cli_path")
         self.host_working_directory = host_working_directory
-        self.image_repo = image_repo
+        self.image_repo_with_project = image_repo_with_project
         self.image_tag = image_tag
         self.cli_path = cli_path
         self.passed_tests = []
         self.failed_tests = []
 
     def build_image_name(self):
-        return f"{self.image_repo}aptoslabs/tools:{self.image_tag}"
+        return build_image_name(self.image_repo_with_project, self.image_tag)
 
     # This function lets you pass call the CLI like you would normally, but really it is
     # calling the CLI in a docker container and mounting the host working directory such
@@ -128,7 +131,9 @@ class RunHelper:
     # set, in which case we ensure the file is there.
     def prepare(self):
         if self.image_tag:
-            command = ["docker", "pull", self.build_image_name()]
+            image_name = self.build_image_name()
+            LOG.info(f"Pre-pulling image for CLI we're testing: {image_name}")
+            command = ["docker", "pull", image_name]
             LOG.debug(f"Running command: {command}")
             output = subprocess.check_output(command)
             LOG.debug(f"Output: {output}")
@@ -159,3 +164,14 @@ class RunHelper:
             public_key=public_key,
             account_address=account_address,
         )
+
+    # If the test in question writes to the working directory, e.g. because it creates
+    # a new CLI config (.aptos), wrap the test function with this. See more here:
+    # https://github.com/community/community/discussions/44243
+    # Ideally GH offers something soon that means we don't need to do this.
+    @contextmanager
+    def fix_permissions(self):
+        try:
+            yield
+        finally:
+            recursive_chmod(self.host_working_directory, 0o777)
