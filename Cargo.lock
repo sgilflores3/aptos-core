@@ -139,6 +139,7 @@ dependencies = [
  "aptos-global-constants",
  "aptos-keygen",
  "aptos-logger",
+ "aptos-network-checker",
  "aptos-node",
  "aptos-rest-client",
  "aptos-sdk",
