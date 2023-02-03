@@ -22,11 +22,9 @@ module aptos_std::smart_table {
     const EINVALID_LOAD_THRESHOLD_PERCENT: u64 = 5;
     /// Invalid target bucket size.
     const EINVALID_TARGET_BUCKET_SIZE: u64 = 6;
-    /// Invariable broken.
-    const EINVARIABLE_BROKEN: u64 = 7;
 
     /// SmartTable entry contains both the key and value.
-    struct Entry<K, V> has store {
+    struct Entry<K, V> has copy, drop, store {
         hash: u64,
         key: K,
         value: V,
@@ -42,19 +40,21 @@ module aptos_std::smart_table {
         // Split will be triggered when target load threshold is reached when adding a new entry. In percent.
         split_load_threshold: u8,
         // The target size of each bucket, which is NOT enforced so oversized buckets can exist.
-        bucket_size: u64,
+        target_bucket_size: u64,
     }
 
-    /// Create an empty SmartTable with `initial_buckets` buckets.
+    /// Create an empty SmartTable with default configurations.
     public fun new<K: copy + drop + store, V: store>(): SmartTable<K, V> {
         new_with_config<K, V>(0, 0, 0)
     }
 
-    /// num_initial_buckets: The number of buckets on initialization. 0 means using default value.
-    /// split_load_threshold: The percent number which once reached, split will be triggered. 0 means using default value.
-    /// bucket_size: The target number of entries per bucket, though not enforced. 0 means not set and will dynamically
-    ///              assgined by the contract code.
-    public fun new_with_config<K: copy + drop + store, V: store>(num_initial_buckets: u64, split_load_threshold: u8, bucket_size: u64): SmartTable<K, V> {
+    /// Create an empty SmartTable with customized configurations.
+    /// `num_initial_buckets`: The number of buckets on initialization. 0 means using default value.
+    /// `split_load_threshold`: The percent number which once reached, split will be triggered. 0 means using default
+    /// value.
+    /// `target_bucket_size`: The target number of entries per bucket, though not guaranteed. 0 means not set and will
+    /// dynamically assgined by the contract code.
+    public fun new_with_config<K: copy + drop + store, V: store>(num_initial_buckets: u64, split_load_threshold: u8, target_bucket_size: u64): SmartTable<K, V> {
         assert!(split_load_threshold <= 100, error::invalid_argument(EINVALID_LOAD_THRESHOLD_PERCENT));
         let buckets = table_with_length::new();
         table_with_length::add(&mut buckets, 0, vector::empty());
@@ -65,17 +65,20 @@ module aptos_std::smart_table {
             size: 0,
             // The default split load threshold is 75%.
             split_load_threshold: if (split_load_threshold == 0) {75} else {split_load_threshold},
-            bucket_size,
+            target_bucket_size,
         };
         // The default number of initial buckets is 2.
         if (num_initial_buckets == 0) {
             num_initial_buckets = 2;
         };
-        split(&mut table, num_initial_buckets- 1);
+        while (num_initial_buckets > 1) {
+            num_initial_buckets = num_initial_buckets - 1;
+            split_one_bucket(&mut table);
+        };
         table
     }
 
-    /// Destroy empty tab-le.
+    /// Destroy empty table.
     /// Aborts if it's not empty.
     public fun destroy_empty<K, V>(table: SmartTable<K, V>) {
         assert!(table.size == 0, error::invalid_argument(ENOT_EMPTY));
@@ -84,13 +87,33 @@ module aptos_std::smart_table {
             vector::destroy_empty(table_with_length::remove(&mut table.buckets, i));
             i = i + 1;
         };
-        let SmartTable {buckets, num_buckets: _, level: _, size: _, split_load_threshold:_, bucket_size: _} = table;
+        let SmartTable {buckets, num_buckets: _, level: _, size: _, split_load_threshold:_, target_bucket_size: _} = table;
+        table_with_length::destroy_empty(buckets);
+    }
+
+    /// Destroy a table completely when V is dropable.
+    public fun destroy<K: drop, V: drop>(table: SmartTable<K, V>) {
+        let i = 0;
+        while (i < table.num_buckets) {
+            let j = 0;
+            let bucket = table_with_length::remove(&mut table.buckets, i);
+            let bucket_length = vector::length(&bucket);
+            while (j < bucket_length) {
+                vector::pop_back(&mut bucket);
+                j = j + 1;
+            };
+            vector::destroy_empty(bucket);
+            i = i + 1;
+        };
+        let SmartTable {buckets, num_buckets: _, level: _, size: _, split_load_threshold:_, target_bucket_size: _} = table;
         table_with_length::destroy_empty(buckets);
     }
 
     /// Add (key, value) pair in the hash map, it may grow one bucket if current load factor exceeds the threshold.
-    /// Note it may not split the actual overflowed bucket.
+    /// Note it may not split the actual overflowed bucket. Instead, it was determined by `num_buckets` and `level`.
+    /// For standard linear hash algorithm, it is stored as a variable but `num_buckets` here could be leveraged.
     /// Abort if `key` already exists.
+    /// Note: This method may occasionally cost much more gas when triggering bucket split.
     public fun add<K, V>(table: &mut SmartTable<K, V>, key: K, value: V) {
         let hash = sip_hash_from_value(&key);
         let index = bucket_index(table.level, table.num_buckets, hash);
@@ -103,10 +126,9 @@ module aptos_std::smart_table {
             i = i + 1;
         };
         let e = Entry {hash, key, value};
-        if (table.bucket_size == 0) {
-            assert!(table.size == 0, error::internal(EINVARIABLE_BROKEN));
+        if (table.target_bucket_size == 0) {
             let estimated_entry_size = max(size_of_val(&e), 1);
-            table.bucket_size = max(1024 /* free_write_quota */ / estimated_entry_size, 1);
+            table.target_bucket_size = max(1024 /* free_write_quota */ / estimated_entry_size, 1);
         };
         vector::push_back(bucket, e);
         table.size = table.size + 1;
@@ -116,7 +138,7 @@ module aptos_std::smart_table {
         }
     }
 
-    /// Split the next bucket into two and re-insert existing items.
+    /// Decide which is the next bucket to split and split it into two with the elements inside the bucket.
     fun split_one_bucket<K, V>(table: &mut SmartTable<K, V>) {
         let new_bucket_index = table.num_buckets;
         // the next bucket to split is num_bucket without the most significant bit.
@@ -151,6 +173,8 @@ module aptos_std::smart_table {
     }
 
     /// Return the expected bucket index to find the hash.
+    /// Basically, it use different base `1 << level` vs `1 << (level + 1)` in modulo operation based on the target
+    /// bucket index compared to the index of the next bucket to split.
     fun bucket_index(level: u8, num_buckets: u64, hash: u64): u64 {
         let index = hash % (1 << (level + 1));
         if (index < num_buckets) {
@@ -238,7 +262,7 @@ module aptos_std::smart_table {
 
     /// Return the load factor of the hashtable.
     public fun load_factor<K, V>(table: &SmartTable<K, V>): u64 {
-        table.size * 100 / (table.num_buckets * table.bucket_size)
+        table.size * 100 / (table.num_buckets * table.target_bucket_size)
     }
 
     /// Update `split_load_threshold`.
@@ -247,18 +271,10 @@ module aptos_std::smart_table {
         table.split_load_threshold = split_load_threshold;
     }
 
-    /// Update `bucket_size`.
-    public fun update_bucket_size<K, V>(table: &mut SmartTable<K, V>, bucket_size: u64) {
-        assert!(bucket_size > 0, error::invalid_argument(EINVALID_LOAD_THRESHOLD_PERCENT));
-        table.bucket_size = bucket_size;
-    }
-
-    /// Reserve `additional_buckets` more buckets.
-    fun split<K, V>(table: &mut SmartTable<K, V>, additional_buckets: u64) {
-        while (additional_buckets > 0) {
-            additional_buckets = additional_buckets - 1;
-            split_one_bucket(table);
-        }
+    /// Update `target_bucket_size`.
+    public fun update_target_bucket_size<K, V>(table: &mut SmartTable<K, V>, target_bucket_size: u64) {
+        assert!(target_bucket_size > 0, error::invalid_argument(EINVALID_TARGET_BUCKET_SIZE));
+        table.target_bucket_size = target_bucket_size;
     }
 
     #[test]
@@ -273,7 +289,7 @@ module aptos_std::smart_table {
         i = 0;
         while (i < 200) {
             *borrow_mut(&mut table, i) = i * 2;
-            assert!(*borrow(&mut table, i) == i * 2, 0);
+            assert!(*borrow(&table, i) == i * 2, 0);
             i = i + 1;
         };
         i = 0;
@@ -288,40 +304,49 @@ module aptos_std::smart_table {
 
     #[test]
     fun smart_table_split_test() {
-        let table: SmartTable<u64, u64> = new();
-        let i = 2;
-        let level = 1;
+        let table: SmartTable<u64, u64> = new_with_config(1, 100, 1);
+        let i = 1;
+        let level = 0;
         while (i <= 256) {
             assert!(table.num_buckets == i, 0);
             assert!(table.level == level, i);
-            split_one_bucket(&mut table);
+            add(&mut table, i, i);
             i = i + 1;
             if (i == 1 << (level + 1)) {
                 level = level + 1;
             };
         };
-        destroy_empty(table);
+        let i = 1;
+        while (i <= 256) {
+            assert!(*borrow(&table, i) == i, 0);
+            i = i + 1;
+        };
+        assert!(table.num_buckets == 257, table.num_buckets);
+        assert!(load_factor(&table) == 99, 0);
+        assert!(length(&table) == 256, 0);
+        destroy(table);
     }
 
     #[test]
-    fun smart_table_bucket_index_test() {
-        let table: SmartTable<u64, u64> = new_with_config<u64, u64>(8, 75, 0);
-        assert!(table.level == 3, 0);
+    fun smart_table_update_configs() {
+        let table = new();
         let i = 0;
-        while (i < 4) {
-            split_one_bucket(&mut table);
+        while (i < 200) {
+            add(&mut table, i, i);
             i = i + 1;
         };
-        assert!(table.level == 3, 0);
-        assert!(table.num_buckets == 12, 0);
+        assert!(length(&table) == 200, 0);
+        update_target_bucket_size(&mut table, 10);
+        update_split_load_threshold(&mut table, 50);
+        while (i < 400) {
+            add(&mut table, i, i);
+            i = i + 1;
+        };
+        assert!(length(&table) == 400, 0);
         i = 0;
-        while (i < 256) {
-            let j = i & 15; // i % 16
-            if (j >= table.num_buckets) {
-                j = j ^ 8; // i % 8
-            };
-            let index = bucket_index(table.level, table.num_buckets, i);
-            assert!(index == j, 0);
+        while (i < 400) {
+            assert!(contains(&table, i), 0);
+            assert!(remove(&mut table, i) == i, 0);
             i = i + 1;
         };
         destroy_empty(table);
