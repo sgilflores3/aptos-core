@@ -24,7 +24,7 @@ fn main() {
 
     // Load config.
     let args = Args::parse();
-    let config = aptos_indexer_grpc_cache_worker::IndexerGrpcCacheWorkerConfig::load(
+    let config = aptos_indexer_grpc_utils::config::IndexerGrpcConfig::load(
         std::path::PathBuf::from(args.config_path),
     )
     .unwrap();
