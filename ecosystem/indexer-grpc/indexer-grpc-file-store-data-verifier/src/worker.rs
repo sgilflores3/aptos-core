@@ -7,7 +7,7 @@ use aptos_indexer_grpc_utils::{
 };
 use aptos_protos::datastream::v1::{raw_datastream_response::Response, RawDatastreamRequest};
 use futures::{self, StreamExt};
-use tokio::sync::mpsc::{channel, error::TrySendError};
+use tokio::sync::mpsc::channel;
 
 pub struct Worker {
     config: IndexerGrpcConfig,
@@ -58,8 +58,7 @@ impl Worker {
                             }
                         },
                         Response::Status(d) => match d.r#type {
-                            0 => {
-                            },
+                            0 => {},
                             1 => {
                                 for i in tmap.values() {
                                     gprc_sender.send(i.clone()).await.unwrap();
@@ -107,7 +106,7 @@ impl Worker {
             }
             verified_count += 1;
             if verified_count % 1000 == 0 {
-                aptos_logger::info!(verified_count=verified_count, "Succssefully verified.");
+                aptos_logger::info!(verified_count = verified_count, "Succssefully verified.");
             }
         }
     }
