@@ -121,6 +121,25 @@ module std::features {
         is_enabled(RESOURCE_GROUPS)
     }
 
+    /// Whether metadata is tracked for newly allocated storage slots.
+    const STORAGE_SLOT_METADATA: u64 = 10;
+
+    public fun get_storage_slot_metadata_feature(): u64 { STORAGE_SLOT_METADATA }
+
+    public fun storage_slot_metadata_enabled(): bool acquires Features {
+        is_enabled(STORAGE_SLOT_METADATA)
+    }
+
+    /// Whether metadata is tracked for newly allocated storage slots.
+    const STORAGE_DEPOSIT: u64 = 11;
+
+    public fun get_storage_deposit_feature(): u64 { STORAGE_DEPOSIT }
+
+    public fun storage_deposit_enabled(): bool acquires Features {
+        is_enabled(STORAGE_SLOT_METADATA)
+    }
+
+
     // ============================================================================================
     // Feature Flag Implementation
 

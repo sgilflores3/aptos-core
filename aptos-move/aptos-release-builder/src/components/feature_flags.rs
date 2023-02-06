@@ -26,6 +26,8 @@ pub enum FeatureFlag {
     MultiEd25519PkValidateV2Natives,
     Blake2b256Native,
     ResourceGroups,
+    StorageSlotMetadata,
+    StorageDeposit,
 }
 
 fn generate_features_blob(writer: &CodeWriter, data: &[u64]) {
@@ -124,6 +126,8 @@ impl From<FeatureFlag> for AptosFeatureFlag {
             },
             FeatureFlag::Blake2b256Native => AptosFeatureFlag::BLAKE2B_256_NATIVE,
             FeatureFlag::ResourceGroups => AptosFeatureFlag::RESOURCE_GROUPS,
+            FeatureFlag::StorageSlotMetadata => AptosFeatureFlag::STORAGE_SLOT_METADATA,
+            FeatureFlag::StorageDeposit => AptosFeatureFlag::STORAGE_DEPOSIT,
         }
     }
 }
@@ -147,6 +151,8 @@ impl From<AptosFeatureFlag> for FeatureFlag {
             },
             AptosFeatureFlag::BLAKE2B_256_NATIVE => FeatureFlag::Blake2b256Native,
             AptosFeatureFlag::RESOURCE_GROUPS => FeatureFlag::ResourceGroups,
+            AptosFeatureFlag::STORAGE_SLOT_METADATA => FeatureFlag::StorageSlotMetadata,
+            AptosFeatureFlag::STORAGE_DEPOSIT => FeatureFlag::StorageDeposit,
         }
     }
 }
