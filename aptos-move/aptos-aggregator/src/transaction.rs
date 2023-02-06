@@ -82,8 +82,20 @@ impl ChangeSetExt {
                         let val: u128 = bcs::from_bytes(data)?;
                         *r = Modification(bcs::to_bytes(&op.apply_to(val)?)?);
                     },
-                    Deletion => {
+                    Deletion | DeletionWithMetadata { .. } => {
                         bail!("Failed to apply Aggregator delta -- value already deleted");
+                    },
+                    CreationWithMetadata { data, metadata } => {
+                        let val: u128 = bcs::from_bytes(data)?;
+                        let data = bcs::to_bytes(&op.apply_to(val)?)?;
+                        let metadata = metadata.clone();
+                        *r = CreationWithMetadata { data, metadata };
+                    },
+                    ModificationWithMetadata { data, metadata } => {
+                        let val: u128 = bcs::from_bytes(data)?;
+                        let data = bcs::to_bytes(&op.apply_to(val)?)?;
+                        let metadata = metadata.clone();
+                        *r = ModificationWithMetadata { data, metadata };
                     },
                 }
             } else {
@@ -110,7 +122,6 @@ impl ChangeSetExt {
 
     pub fn squash_change_set(self, other: ChangeSet) -> anyhow::Result<Self> {
         use btree_map::Entry::*;
-        use WriteOp::*;
 
         let checker = self.checker.clone();
         let (mut delta, change_set) = self.into_inner();
@@ -123,19 +134,8 @@ impl ChangeSetExt {
         for (key, op) in other_write_set.into_iter() {
             match write_ops.entry(key) {
                 Occupied(mut entry) => {
-                    let r = entry.get_mut();
-                    match (&r, op) {
-                        (Modification(_) | Creation(_), Creation(_))
-                        | (Deletion, Deletion | Modification(_)) => {
-                            bail!("The given change sets cannot be squashed")
-                        },
-                        (Modification(_), Modification(data)) => *r = Modification(data),
-                        (Creation(_), Modification(data)) => *r = Creation(data),
-                        (Modification(_), Deletion) => *r = Deletion,
-                        (Deletion, Creation(data)) => *r = Modification(data),
-                        (Creation(_), Deletion) => {
-                            entry.remove();
-                        },
+                    if !WriteOp::squash(entry.get_mut(), op)? {
+                        entry.remove();
                     }
                 },
                 Vacant(entry) => {

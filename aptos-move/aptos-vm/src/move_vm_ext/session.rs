@@ -301,6 +301,14 @@ impl SessionOutput {
         let mut write_set_mut = WriteSetMut::new(Vec::new());
         let mut delta_change_set = DeltaChangeSet::empty();
 
+        let Self {
+            change_set,
+            resource_group_change_set,
+            events,
+            table_change_set,
+            aggregator_change_set,
+        } = self;
+
         for (addr, account_changeset) in change_set.into_inner() {
             let (modules, resources) = account_changeset.into_inner();
             for (struct_tag, blob_op) in resources {
