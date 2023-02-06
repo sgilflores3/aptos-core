@@ -17,7 +17,7 @@ use aptos_protos::datastream::v1::{
 };
 use futures::Stream;
 use std::{pin::Pin, sync::Arc, thread::sleep, time::Duration};
-use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::mpsc::{channel, error::TrySendError};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
@@ -57,7 +57,7 @@ impl IndexerStream for DatastreamServer {
         req: Request<RawDatastreamRequest>,
     ) -> Result<Response<Self::RawDatastreamStream>, Status> {
         // Limit the TPS at 20K. This is to prevent the server from being overloaded.
-        let (tx, rx) = mpsc::channel(STREAMING_CHANNEL_SIZE as usize);
+        let (tx, rx) = channel(STREAMING_CHANNEL_SIZE as usize);
         let req = req.into_inner();
         // Round the version to the nearest BLOB_STORAGE_SIZE.
         let mut current_version =

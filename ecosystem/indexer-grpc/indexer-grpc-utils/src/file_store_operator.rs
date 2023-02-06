@@ -16,7 +16,7 @@ pub fn generate_blob_name(starting_version: u64) -> String {
 }
 
 #[derive(Serialize, Deserialize)]
-struct TransactionsFile {
+pub struct TransactionsFile {
     pub starting_version: u64,
     /// The transactions in the blob.
     pub transactions: Vec<String>,
@@ -84,6 +84,21 @@ impl FileStoreOperator {
                 // Fix this with metadata creation.
                 panic!("Failed to get file store metadata: {:?}", err);
             },
+        }
+    }
+
+    pub async fn get_transactions_file(
+        &mut self,
+        version: u64,
+    ) -> anyhow::Result<TransactionsFile> {
+        let current_file_name = generate_blob_name(version);
+        match Object::download(&self.bucket_name, current_file_name.as_str()).await {
+            Ok(file) => {
+                let file: TransactionsFile =
+                    serde_json::from_slice(&file).expect("Expected file to be valid JSON.");
+                Ok(file)
+            },
+            Err(err) => Err(anyhow::Error::from(err)),
         }
     }
 

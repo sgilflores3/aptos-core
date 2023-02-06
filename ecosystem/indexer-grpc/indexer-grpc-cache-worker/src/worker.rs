@@ -1,11 +1,11 @@
 // Copyright (c) Aptos
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::create_grpc_client;
 use aptos_indexer_grpc_utils::{
     cache_operator::CacheOperator,
     config::IndexerGrpcConfig,
     constants::BLOB_STORAGE_SIZE,
+    create_grpc_client,
     file_store_operator::{FileStoreMetadata, FileStoreOperator},
 };
 use aptos_logger::{error, info};
