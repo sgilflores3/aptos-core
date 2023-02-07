@@ -112,7 +112,7 @@ impl PayloadManager {
         &self,
         block: &Block,
     ) -> Result<Vec<SignedTransaction>, Error> {
-        let mut payload_generator = SenderAwarePayloadGenerator::new(100, 100);
+        let mut payload_generator = SenderAwarePayloadGenerator::new(20, 10);
         Ok(payload_generator.gen_payload(self.get_transactions(block).await?))
     }
 

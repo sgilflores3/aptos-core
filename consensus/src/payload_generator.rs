@@ -1,6 +1,7 @@
 // Copyright (c) Aptos
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::counters::{NUM_SENDERS_IN_BLOCK, TXN_SHUFFLE_SECONDS};
 use aptos_types::transaction::SignedTransaction;
 use move_core_types::account_address::AccountAddress;
 use std::{
@@ -28,6 +29,7 @@ pub struct SenderAwarePayloadGenerator {
 
 impl PayloadGenerator for SenderAwarePayloadGenerator {
     fn gen_payload(&mut self, txns: Vec<SignedTransaction>) -> Vec<SignedTransaction> {
+        let _timer = TXN_SHUFFLE_SECONDS.start_timer();
         let num_transactions = txns.len();
 
         let mut candidate_txns = VecDeque::new();
@@ -124,6 +126,7 @@ impl SenderAwarePayloadState {
     }
 
     pub fn finalize(&mut self) -> Vec<SignedTransaction> {
+        NUM_SENDERS_IN_BLOCK.set(self.senders_in_window.len() as f64);
         self.txns.take().expect("Finalize already called")
     }
 }
@@ -134,10 +137,9 @@ mod tests {
     use aptos_crypto::{ed25519::Ed25519PrivateKey, PrivateKey, SigningKey, Uniform};
     use aptos_types::{
         chain_id::ChainId,
-        transaction::{RawTransaction, Script, SignedTransaction, Transaction, TransactionPayload},
+        transaction::{RawTransaction, Script, SignedTransaction, TransactionPayload},
     };
     use move_core_types::account_address::AccountAddress;
-    use proptest::prop_assume;
     use rand::{rngs::OsRng, Rng};
     use std::collections::HashSet;
 
