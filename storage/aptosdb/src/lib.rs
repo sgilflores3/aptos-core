@@ -250,7 +250,7 @@ impl Drop for RocksdbPropertyReporter {
 pub struct AptosDB {
     ledger_db: Arc<DB>,
     state_merkle_db: Arc<DB>,
-    _kv_db: Arc<Option<DB>>,
+    state_kv_db: Arc<DB>,
     event_store: Arc<EventStore>,
     ledger_store: Arc<LedgerStore>,
     state_store: Arc<StateStore>,
@@ -265,7 +265,7 @@ impl AptosDB {
     fn new_with_dbs(
         ledger_rocksdb: DB,
         state_merkle_rocksdb: DB,
-        kv_rocksdb: Option<DB>,
+        state_kv_rocksdb: Option<DB>,
         pruner_config: PrunerConfig,
         buffered_state_target_items: usize,
         max_nodes_per_lru_cache_shard: usize,
@@ -273,7 +273,11 @@ impl AptosDB {
     ) -> Self {
         let arc_ledger_rocksdb = Arc::new(ledger_rocksdb);
         let arc_state_merkle_rocksdb = Arc::new(state_merkle_rocksdb);
-        let arc_kv_rocksdb = Arc::new(kv_rocksdb);
+        let arc_state_kv_rocksdb = if let Some(db) = state_kv_rocksdb {
+            Arc::new(db)
+        } else {
+            Arc::clone(&arc_ledger_rocksdb)
+        };
         let state_pruner = StatePrunerManager::new(
             Arc::clone(&arc_state_merkle_rocksdb),
             pruner_config.state_merkle_pruner_config,
@@ -285,12 +289,14 @@ impl AptosDB {
         let state_store = Arc::new(StateStore::new(
             Arc::clone(&arc_ledger_rocksdb),
             Arc::clone(&arc_state_merkle_rocksdb),
+            Arc::clone(&arc_state_kv_rocksdb),
             state_pruner,
             epoch_snapshot_pruner,
             buffered_state_target_items,
             max_nodes_per_lru_cache_shard,
             hack_for_tests,
         ));
+        // TODO(grao): Handle state kv db pruning.
         let ledger_pruner = LedgerPrunerManager::new(
             Arc::clone(&arc_ledger_rocksdb),
             Arc::clone(&state_store),
@@ -300,7 +306,7 @@ impl AptosDB {
         AptosDB {
             ledger_db: Arc::clone(&arc_ledger_rocksdb),
             state_merkle_db: Arc::clone(&arc_state_merkle_rocksdb),
-            _kv_db: Arc::clone(&arc_kv_rocksdb),
+            state_kv_db: Arc::clone(&arc_state_kv_rocksdb),
             event_store: Arc::new(EventStore::new(Arc::clone(&arc_ledger_rocksdb))),
             ledger_store: Arc::new(LedgerStore::new(Arc::clone(&arc_ledger_rocksdb))),
             state_store,
@@ -812,6 +818,7 @@ impl AptosDB {
         first_version: u64,
         expected_state_db_usage: StateStorageUsage,
         cs: &SchemaBatch,
+        kv_cs: &SchemaBatch,
     ) -> Result<HashValue> {
         let last_version = first_version + txns_to_commit.len() as u64 - 1;
 
@@ -834,7 +841,7 @@ impl AptosDB {
                     state_updates_vec,
                     first_version,
                     expected_state_db_usage,
-                    cs,
+                    kv_cs,
                 )
             });
 
@@ -879,14 +886,6 @@ impl AptosDB {
             t1.join().unwrap()?;
             t2.join().unwrap()
         })
-    }
-
-    /// Write the whole schema batch including all data necessary to mutate the ledger
-    /// state of some transaction by leveraging rocksdb atomicity support. Also committed are the
-    /// LedgerCounters.
-    fn commit(&self, batch: SchemaBatch) -> Result<()> {
-        self.ledger_db.write_schemas(batch)?;
-        Ok(())
     }
 
     fn get_table_info_option(&self, handle: TableHandle) -> Result<Option<TableInfo>> {
@@ -1687,12 +1686,14 @@ impl DbWriter for AptosDB {
 
             // Gather db mutations to `batch`.
             let batch = SchemaBatch::new();
+            let kv_batch = SchemaBatch::new();
 
             let new_root_hash = self.save_transactions_impl(
                 txns_to_commit,
                 first_version,
                 latest_in_memory_state.current.usage(),
                 &batch,
+                &kv_batch,
             )?;
 
             // If expected ledger info is provided, verify result root hash and save the ledger info.
@@ -1758,7 +1759,8 @@ impl DbWriter for AptosDB {
                     let _timer = OTHER_TIMERS_SECONDS
                         .with_label_values(&["save_transactions_commit"])
                         .start_timer();
-                    self.commit(batch)?;
+                    self.state_kv_db.write_schemas(kv_batch)?;
+                    self.ledger_db.write_schemas(batch)?;
                 }
 
                 let mut end_with_reconfig = false;

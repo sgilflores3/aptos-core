@@ -76,6 +76,7 @@ static IO_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
 pub(crate) struct StateDb {
     pub ledger_db: Arc<DB>,
     pub state_merkle_db: Arc<StateMerkleDb>,
+    pub state_kv_db: Arc<DB>,
     pub state_pruner: StatePrunerManager<StaleNodeIndexSchema>,
     pub epoch_snapshot_pruner: StatePrunerManager<StaleNodeIndexCrossEpochSchema>,
 }
@@ -178,7 +179,7 @@ impl StateDb {
         let mut read_opts = ReadOptions::default();
         // We want `None` if the state_key changes in iteration.
         read_opts.set_prefix_same_as_start(true);
-        let mut iter = self.ledger_db.iter::<StateValueSchema>(read_opts)?;
+        let mut iter = self.state_kv_db.iter::<StateValueSchema>(read_opts)?;
         iter.seek(&(state_key.clone(), version))?;
         Ok(iter
             .next()
@@ -267,6 +268,7 @@ impl StateStore {
     pub fn new(
         ledger_db: Arc<DB>,
         state_merkle_db: Arc<DB>,
+        state_kv_db: Arc<DB>,
         state_pruner: StatePrunerManager<StaleNodeIndexSchema>,
         epoch_snapshot_pruner: StatePrunerManager<StaleNodeIndexCrossEpochSchema>,
         buffered_state_target_items: usize,
@@ -280,6 +282,7 @@ impl StateStore {
         let state_db = Arc::new(StateDb {
             ledger_db,
             state_merkle_db,
+            state_kv_db,
             state_pruner,
             epoch_snapshot_pruner,
         });
@@ -425,7 +428,7 @@ impl StateStore {
         desired_version: Version,
     ) -> Result<PrefixedStateValueIterator> {
         PrefixedStateValueIterator::new(
-            &self.ledger_db,
+            &self.state_kv_db,
             key_prefix.clone(),
             first_key_opt.cloned(),
             desired_version,
@@ -704,6 +707,7 @@ impl StateStore {
         end: Version,
         db_batch: &SchemaBatch,
     ) -> Result<()> {
+        // TODO(grao): Replace ledger_db by state_kv_db.
         let mut iter = self
             .state_db
             .ledger_db
