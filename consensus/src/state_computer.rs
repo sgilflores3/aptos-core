@@ -108,7 +108,7 @@ impl StateComputer for ExecutionProxy {
         );
 
         let payload_manager = self.payload_manager.lock().as_ref().unwrap().clone();
-        let txns = payload_manager.get_transactions(block).await?;
+        let txns = payload_manager.get_shuffled_transactions(block).await?;
 
         // TODO: figure out error handling for the prologue txn
         let executor = self.executor.clone();
@@ -164,7 +164,9 @@ impl StateComputer for ExecutionProxy {
                 payloads.push(payload.clone());
             }
 
-            let signed_txns = payload_manager.get_transactions(block.block()).await?;
+            let signed_txns = payload_manager
+                .get_shuffled_transactions(block.block())
+                .await?;
 
             txns.extend(block.transactions_to_commit(&self.validators.lock(), signed_txns));
             reconfig_events.extend(block.reconfig_event());

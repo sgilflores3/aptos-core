@@ -46,6 +46,7 @@ pub mod consensus_provider;
 pub mod counters;
 /// AptosNet interface.
 pub mod network_interface;
+mod payload_generator;
 mod payload_manager;
 
 pub use consensusdb::create_checkpoint;
