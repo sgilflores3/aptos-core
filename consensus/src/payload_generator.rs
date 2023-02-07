@@ -29,6 +29,7 @@ pub struct SenderAwarePayloadGenerator {
 impl PayloadGenerator for SenderAwarePayloadGenerator {
     fn gen_payload(&mut self, txns: Vec<SignedTransaction>) -> Vec<SignedTransaction> {
         let num_transactions = txns.len();
+
         let mut candidate_txns = VecDeque::new();
         for txn in txns {
             candidate_txns.push_back(txn)
@@ -92,6 +93,7 @@ impl SenderAwarePayloadState {
     /// updates the senders_in_window map.
     pub fn add_transaction(&mut self, txn: SignedTransaction) {
         if self.start_index >= 0 {
+            // if the start_index is negative, then no sender falls out of the window.
             let sender = self
                 .txns
                 .as_mut()
@@ -127,4 +129,109 @@ impl SenderAwarePayloadState {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use crate::payload_generator::{PayloadGenerator, SenderAwarePayloadGenerator};
+    use aptos_crypto::{ed25519::Ed25519PrivateKey, PrivateKey, SigningKey, Uniform};
+    use aptos_types::{
+        chain_id::ChainId,
+        transaction::{RawTransaction, Script, SignedTransaction, Transaction, TransactionPayload},
+    };
+    use move_core_types::account_address::AccountAddress;
+    use proptest::prop_assume;
+    use rand::{rngs::OsRng, Rng};
+    use std::collections::HashSet;
+
+    fn create_signed_transaction(num_transactions: usize) -> Vec<SignedTransaction> {
+        let private_key = Ed25519PrivateKey::generate_for_testing();
+        let public_key = private_key.public_key();
+        let sender = AccountAddress::random();
+
+        let mut transactions = Vec::new();
+
+        for i in 0..num_transactions {
+            let transaction_payload =
+                TransactionPayload::Script(Script::new(vec![], vec![], vec![]));
+            let raw_transaction = RawTransaction::new(
+                sender,
+                i as u64,
+                transaction_payload,
+                0,
+                0,
+                0,
+                ChainId::new(10),
+            );
+            let signed_transaction = SignedTransaction::new(
+                raw_transaction.clone(),
+                public_key.clone(),
+                private_key.sign(&raw_transaction).unwrap(),
+            );
+            transactions.push(signed_transaction)
+        }
+
+        transactions
+    }
+
+    #[test]
+    fn test_single_user_txns() {
+        for i in [5, 10, 100] {
+            let txns = create_signed_transaction(i);
+            let mut payload_generator = SenderAwarePayloadGenerator::new(10, 10);
+            let optimized_txns = payload_generator.gen_payload(txns.clone());
+            assert_eq!(txns, optimized_txns)
+        }
+    }
+
+    #[test]
+    fn test_perfect_shuffling() {
+        let num_senders = 50;
+        let mut txns = Vec::new();
+        let mut senders = Vec::new();
+        for _ in 0..num_senders {
+            let mut sender_txns = create_signed_transaction(10);
+            senders.push(sender_txns.get(0).unwrap().sender());
+            txns.append(&mut sender_txns);
+        }
+
+        let mut payload_generator = SenderAwarePayloadGenerator::new(num_senders - 1, 100);
+        let optimized_txns = payload_generator.gen_payload(txns.clone());
+        assert_eq!(txns.len(), optimized_txns.len());
+        let mut sender_index = 0;
+        for txn in optimized_txns {
+            assert_eq!(&txn.sender(), senders.get(sender_index).unwrap());
+            sender_index = (sender_index + 1) % senders.len()
+        }
+    }
+
+    #[test]
+    fn test_random_shuffling() {
+        let mut rng = OsRng;
+        let max_senders = 50;
+        let max_txn_per_sender = 100;
+        let num_senders = rng.gen_range(1, max_senders);
+        let mut orig_txns = Vec::new();
+        let mut senders = Vec::new();
+        let mut orig_txn_set = HashSet::new();
+        for _ in 0..num_senders {
+            let mut sender_txns = create_signed_transaction(rng.gen_range(1, max_txn_per_sender));
+            senders.push(sender_txns.get(0).unwrap().sender());
+            orig_txns.append(&mut sender_txns);
+        }
+        for txn in orig_txns.clone() {
+            orig_txn_set.insert(txn.into_raw_transaction());
+        }
+
+        let mut payload_generator = SenderAwarePayloadGenerator::new(num_senders - 1, 100);
+        let optimized_txns = payload_generator.gen_payload(orig_txns.clone());
+        let mut optimized_txn_set = HashSet::new();
+        assert_eq!(orig_txns.len(), optimized_txns.len());
+
+        for optimized_txn in optimized_txns {
+            assert!(orig_txn_set.contains(&optimized_txn.clone().into_raw_transaction()));
+            optimized_txn_set.insert(optimized_txn.into_raw_transaction());
+        }
+
+        for orig_txn in orig_txns {
+            assert!(optimized_txn_set.contains(&orig_txn.into_raw_transaction()));
+        }
+    }
+}
