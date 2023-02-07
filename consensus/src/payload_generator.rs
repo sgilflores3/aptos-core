@@ -43,6 +43,7 @@ impl PayloadGenerator for SenderAwarePayloadGenerator {
                 if !self.sliding_window.has_conflict_in_window(&candidate) || j == max_lookup - 1 {
                     // Either we find a transaction that has no conflict or we exhaust all the lookup
                     self.sliding_window.add_transaction(candidate);
+                    break;
                 } else {
                     candidate_txns.push_back(candidate);
                 }
