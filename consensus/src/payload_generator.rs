@@ -73,7 +73,6 @@ struct SenderAwarePayloadState {
     // Please note that the start index can be negative in case the window size is larger than the
     // end_index.
     start_index: i64,
-    window_size: usize,
     // Hashmap of senders to the number of transactions included in the window for the corresponding
     // sender.
     senders_in_window: HashMap<AccountAddress, usize>,
@@ -85,7 +84,6 @@ impl SenderAwarePayloadState {
     pub fn new(window_size: usize) -> Self {
         Self {
             start_index: -(window_size as i64),
-            window_size,
             senders_in_window: HashMap::new(),
             txns: Some(Vec::new()),
         }

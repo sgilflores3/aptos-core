@@ -91,11 +91,12 @@ pub static TOTAL_VOTING_POWER: Lazy<Gauge> = Lazy::new(|| {
     .unwrap()
 });
 
-/// Total voting power of validators in validator set
+/// Number of distinct senders in a block
 pub static NUM_SENDERS_IN_BLOCK: Lazy<Gauge> = Lazy::new(|| {
     register_gauge!("num_senders_in_block", "Total number of senders in a block").unwrap()
 });
 
+/// Transaction shuffling call latency
 pub static TXN_SHUFFLE_SECONDS: Lazy<Histogram> = Lazy::new(|| {
     register_histogram!(
         // metric name
