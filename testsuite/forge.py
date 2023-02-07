@@ -430,7 +430,12 @@ def get_humio_logs_link(
     time_filter: Union[bool, Tuple[datetime, datetime]],
 ) -> str:
     """Get a link to the node logs in humio for a given test run in a given namespace"""
-    query = f'$forgeLogs(validator_instance=*) | "k8s.namespace" = "{forge_namespace}"'
+    query = (
+        f"$forgeLogs(validator_instance=*) |\n"
+        f'    "k8s.namespace" = "{forge_namespace}" // filters on namespace which contains validator logs\n'
+        f"   OR  // remove either side of the OR operator to only display validator or forge-runner logs\n"
+        f'    "k8s.labels.forge-namespace" = "{forge_namespace}" // filters on specific forge-runner pod in default namespace\n'
+    )
     columns = [
         {
             "type": "field",
@@ -690,7 +695,7 @@ class K8sForgeRunner(ForgeRunner):
             forge_image_repo = (
                 f"us-west1-docker.pkg.dev/aptos-global/aptos-internal/forge"
             )
-            validator_node_selector = "" # no selector
+            validator_node_selector = ""  # no selector
             # TODO: also no NAP node selector yet
             # TODO: also registries need to be set up such that the default compute service account can access it:  $PROJECT_ID-compute@developer.gserviceaccount.com
         else:
