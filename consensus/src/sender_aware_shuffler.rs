@@ -273,8 +273,26 @@ mod tests {
             let txn_shuffer = SenderAwareShuffler::new(10, 10);
             let optimized_txns = txn_shuffer.shuffle(txns.clone());
             assert_eq!(txns.len(), optimized_txns.len());
+            // Assert that ordering is unchanged in case of single sender block
             assert_eq!(txns, optimized_txns)
         }
+    }
+
+    #[test]
+    fn test_unique_sender_txns() {
+        let num_senders = 500;
+        let mut txns = Vec::new();
+        let mut senders = Vec::new();
+        for _ in 0..num_senders {
+            let mut sender_txns = create_signed_transaction(1);
+            senders.push(sender_txns.get(0).unwrap().sender());
+            txns.append(&mut sender_txns);
+        }
+        let txn_shuffer = SenderAwareShuffler::new(10, 10);
+        let optimized_txns = txn_shuffer.shuffle(txns.clone());
+        assert_eq!(txns.len(), optimized_txns.len());
+        // Assert that the ordering is unchanged in case of unique senders txns.
+        assert_eq!(txns, optimized_txns)
     }
 
     #[test]
@@ -341,6 +359,83 @@ mod tests {
         for (sender, orig_txns) in orig_txns_by_sender {
             assert_eq!(optimized_txns_by_sender.get(&sender).unwrap(), &orig_txns)
         }
+    }
+
+    #[test]
+    // S1_1, S2_1, S3_1, S3_2
+    // with conflict_window_size=3, should return (keep the order, fairness to early transactions):
+    // S1_1, S2_1, S3_1, S3_2
+    fn test_3_sender_shuffling() {
+        let mut orig_txns = Vec::new();
+        let sender1_txns = create_signed_transaction(1);
+        let sender2_txns = create_signed_transaction(1);
+        let sender3_txns = create_signed_transaction(2);
+        orig_txns.extend(sender1_txns.clone());
+        orig_txns.extend(sender2_txns.clone());
+        orig_txns.extend(sender3_txns.clone());
+        let txn_shuffler = SenderAwareShuffler::new(3, 100);
+        let optimized_txns = txn_shuffler.shuffle(orig_txns);
+        assert_eq!(optimized_txns.get(0).unwrap(), sender1_txns.get(0).unwrap());
+        assert_eq!(optimized_txns.get(1).unwrap(), sender2_txns.get(0).unwrap());
+        assert_eq!(optimized_txns.get(2).unwrap(), sender3_txns.get(0).unwrap());
+        assert_eq!(optimized_txns.get(3).unwrap(), sender3_txns.get(1).unwrap());
+    }
+
+    #[test]
+    // S1_1, S2_1, S1_2, S3_1, S4_1, S5_1
+    // with conflict_window_size=3, should return
+    // (we separate transactions from same sender, even if they are not consecutive):
+    // S1_1, S2_1, S3_1, S4_1, S1_2, S5_1
+    fn test_5_sender_shuffling() {
+        let mut orig_txns = Vec::new();
+        let sender1_txns = create_signed_transaction(2);
+        let sender2_txns = create_signed_transaction(1);
+        let sender3_txns = create_signed_transaction(1);
+        let sender4_txns = create_signed_transaction(1);
+        let sender5_txns = create_signed_transaction(1);
+        orig_txns.extend(sender1_txns.clone());
+        orig_txns.extend(sender2_txns.clone());
+        orig_txns.extend(sender3_txns.clone());
+        orig_txns.extend(sender4_txns.clone());
+        orig_txns.extend(sender5_txns.clone());
+        let txn_shuffler = SenderAwareShuffler::new(3, 100);
+        let optimized_txns = txn_shuffler.shuffle(orig_txns);
+        assert_eq!(optimized_txns.get(0).unwrap(), sender1_txns.get(0).unwrap());
+        assert_eq!(optimized_txns.get(1).unwrap(), sender2_txns.get(0).unwrap());
+        assert_eq!(optimized_txns.get(2).unwrap(), sender3_txns.get(0).unwrap());
+        assert_eq!(optimized_txns.get(3).unwrap(), sender4_txns.get(0).unwrap());
+        assert_eq!(optimized_txns.get(4).unwrap(), sender1_txns.get(1).unwrap());
+        assert_eq!(optimized_txns.get(5).unwrap(), sender5_txns.get(0).unwrap());
+    }
+
+    #[test]
+    // S1_1, S1_2, S2_1, S3_1, S3_2, S4_1, S5_1, S6_1
+    // with conflict_window_size=3, should return (each batches are separated from the point they appear on):
+    // S1_1, S2_1, S3_1, S4_1, S1_2, S5_1, S3_2, S6_1
+    fn test_6_sender_shuffling() {
+        let mut orig_txns = Vec::new();
+        let sender1_txns = create_signed_transaction(2);
+        let sender2_txns = create_signed_transaction(1);
+        let sender3_txns = create_signed_transaction(2);
+        let sender4_txns = create_signed_transaction(1);
+        let sender5_txns = create_signed_transaction(1);
+        let sender6_txns = create_signed_transaction(1);
+        orig_txns.extend(sender1_txns.clone());
+        orig_txns.extend(sender2_txns.clone());
+        orig_txns.extend(sender3_txns.clone());
+        orig_txns.extend(sender4_txns.clone());
+        orig_txns.extend(sender5_txns.clone());
+        orig_txns.extend(sender6_txns.clone());
+        let txn_shuffler = SenderAwareShuffler::new(3, 100);
+        let optimized_txns = txn_shuffler.shuffle(orig_txns);
+        assert_eq!(optimized_txns.get(0).unwrap(), sender1_txns.get(0).unwrap());
+        assert_eq!(optimized_txns.get(1).unwrap(), sender2_txns.get(0).unwrap());
+        assert_eq!(optimized_txns.get(2).unwrap(), sender3_txns.get(0).unwrap());
+        assert_eq!(optimized_txns.get(3).unwrap(), sender4_txns.get(0).unwrap());
+        assert_eq!(optimized_txns.get(4).unwrap(), sender1_txns.get(1).unwrap());
+        assert_eq!(optimized_txns.get(5).unwrap(), sender5_txns.get(0).unwrap());
+        assert_eq!(optimized_txns.get(6).unwrap(), sender3_txns.get(1).unwrap());
+        assert_eq!(optimized_txns.get(7).unwrap(), sender6_txns.get(0).unwrap());
     }
 
     #[test]
