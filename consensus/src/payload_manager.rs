@@ -1,10 +1,7 @@
 // Copyright (c) Aptos
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{
-    payload_generator::{PayloadGenerator, SenderAwarePayloadGenerator},
-    quorum_store::batch_reader::BatchReader,
-};
+use crate::quorum_store::batch_reader::BatchReader;
 use aptos_consensus_types::{
     block::Block,
     common::{DataStatus, Payload},
@@ -108,21 +105,16 @@ impl PayloadManager {
         }
     }
 
-    pub async fn get_shuffled_transactions(
-        &self,
-        block: &Block,
-    ) -> Result<Vec<SignedTransaction>, Error> {
-        let mut payload_generator = SenderAwarePayloadGenerator::new(32, 1024);
-        Ok(payload_generator.gen_payload(self.get_transactions(block).await?))
-    }
-
     /// Extract transaction from a given block
     ///
+    //
+    ///
+    /// /
     ///
     /// Assumes it is never called for the same block concurrently. Otherwise status can be None.
     ///
     ///
-    async fn get_transactions(&self, block: &Block) -> Result<Vec<SignedTransaction>, Error> {
+    pub async fn get_transactions(&self, block: &Block) -> Result<Vec<SignedTransaction>, Error> {
         let payload = match block.payload() {
             Some(p) => p,
             None => return Ok(Vec::new()),

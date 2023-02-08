@@ -1,7 +1,7 @@
-// Copyright (c) Aptos
-// SPDX-License-Identifier: Apache-2.0
-
-use crate::counters::{NUM_SENDERS_IN_BLOCK, TXN_SHUFFLE_SECONDS};
+use crate::{
+    counters::{NUM_SENDERS_IN_BLOCK, TXN_SHUFFLE_SECONDS},
+    transaction_shuffler::TransactionShuffler,
+};
 use aptos_types::transaction::SignedTransaction;
 use move_core_types::account_address::AccountAddress;
 use std::{
@@ -9,46 +9,21 @@ use std::{
     collections::{HashMap, VecDeque},
 };
 
-/// Interface to generate payload for the proposal
-pub trait PayloadGenerator: Send + Sync {
-    fn gen_payload(&mut self, txns: Vec<SignedTransaction>) -> Vec<SignedTransaction>;
+pub struct SenderAwareShuffler {
+    conflict_window_size: usize,
+    look_ahead_window: usize,
 }
 
-pub struct NoOplPayloadGenerator {}
+impl TransactionShuffler for SenderAwareShuffler {
+    fn shuffle(&self, txns: Vec<SignedTransaction>) -> Vec<SignedTransaction> {
+        let mut sliding_window = SlidingWindowState::new(self.conflict_window_size);
 
-impl PayloadGenerator for NoOplPayloadGenerator {
-    fn gen_payload(&mut self, txns: Vec<SignedTransaction>) -> Vec<SignedTransaction> {
-        txns
-    }
-}
-
-pub struct SenderAwarePayloadGenerator {
-    num_transactions_to_look_ahead: usize,
-    sliding_window: SenderAwarePayloadState,
-}
-
-impl PayloadGenerator for SenderAwarePayloadGenerator {
-    fn gen_payload(&mut self, txns: Vec<SignedTransaction>) -> Vec<SignedTransaction> {
         let _timer = TXN_SHUFFLE_SECONDS.start_timer();
         let num_transactions = txns.len();
-
-        let mut candidate_txn_chunks = VecDeque::new();
-        let mut prev_sender = None;
-        for txn in txns {
-            let current_sender = txn.sender();
-            if prev_sender != Some(current_sender) {
-                let txn_chunk = TransactionsChunkBySender::new(current_sender);
-                candidate_txn_chunks.push_back(txn_chunk);
-            }
-            candidate_txn_chunks
-                .back_mut()
-                .unwrap()
-                .add_transaction(txn);
-            prev_sender = Some(current_sender)
-        }
+        let mut candidate_txn_chunks = self.prepare_txn_chunk_by_senders(txns);
         for i in 0..num_transactions {
             let remaining_txns = num_transactions - i;
-            let max_lookup = min(self.num_transactions_to_look_ahead, remaining_txns);
+            let max_lookup = min(self.look_ahead_window, remaining_txns);
             let mut to_be_pushed_back_chunks = VecDeque::new();
             let mut candidate_found = false;
             let mut current_index = 0;
@@ -56,11 +31,8 @@ impl PayloadGenerator for SenderAwarePayloadGenerator {
                 let mut candidate_chunk = candidate_txn_chunks
                     .pop_front()
                     .expect("Expected transaction chunk in the candidate transaction chunk");
-                if !self
-                    .sliding_window
-                    .has_conflict_in_window(&candidate_chunk.sender())
-                {
-                    self.sliding_window.add_transaction(
+                if !sliding_window.has_conflict_in_window(&candidate_chunk.sender()) {
+                    sliding_window.add_transaction(
                         candidate_chunk
                             .remove_transaction()
                             .expect("Expected transaction in candidate chunk"),
@@ -81,7 +53,7 @@ impl PayloadGenerator for SenderAwarePayloadGenerator {
                 let mut chunk = to_be_pushed_back_chunks
                     .pop_back()
                     .expect("Expected non empty vector");
-                self.sliding_window.add_transaction(
+                sliding_window.add_transaction(
                     chunk
                         .remove_transaction()
                         .expect("Empty chunk not expected"),
@@ -98,16 +70,37 @@ impl PayloadGenerator for SenderAwarePayloadGenerator {
                 chunk = to_be_pushed_back_chunks.pop_front();
             }
         }
-        self.sliding_window.finalize()
+        sliding_window.finalize()
     }
 }
 
-impl SenderAwarePayloadGenerator {
-    pub fn new(conflict_window_size: usize, num_transactions_to_look_ahead: usize) -> Self {
+impl SenderAwareShuffler {
+    pub fn new(conflict_window_size: usize, look_aheda_window: usize) -> Self {
         Self {
-            num_transactions_to_look_ahead,
-            sliding_window: SenderAwarePayloadState::new(conflict_window_size),
+            conflict_window_size,
+            look_ahead_window: look_aheda_window,
         }
+    }
+
+    fn prepare_txn_chunk_by_senders(
+        &self,
+        txns: Vec<SignedTransaction>,
+    ) -> VecDeque<TransactionsChunkBySender> {
+        let mut candidate_txn_chunks = VecDeque::new();
+        let mut prev_sender = None;
+        for txn in txns {
+            let current_sender = txn.sender();
+            if prev_sender != Some(current_sender) {
+                let txn_chunk = TransactionsChunkBySender::new(current_sender);
+                candidate_txn_chunks.push_back(txn_chunk);
+            }
+            candidate_txn_chunks
+                .back_mut()
+                .unwrap()
+                .add_transaction(txn);
+            prev_sender = Some(current_sender)
+        }
+        candidate_txn_chunks
     }
 }
 
@@ -115,7 +108,7 @@ impl SenderAwarePayloadGenerator {
 /// high level, it maintains a sliding window of the conflicting transactions, which helps the payload
 /// generator include a set of transactions which are non-conflicting with each other within a particular
 /// window size.
-struct SenderAwarePayloadState {
+struct SlidingWindowState {
     // Please note that the start index can be negative in case the window size is larger than the
     // end_index.
     start_index: i64,
@@ -123,15 +116,15 @@ struct SenderAwarePayloadState {
     // sender.
     senders_in_window: HashMap<AccountAddress, usize>,
     // Partially ordered transactions, needs to be updated every time add_transactions is called.
-    txns: Option<Vec<SignedTransaction>>,
+    txns: Vec<SignedTransaction>,
 }
 
-impl SenderAwarePayloadState {
+impl SlidingWindowState {
     pub fn new(window_size: usize) -> Self {
         Self {
             start_index: -(window_size as i64),
             senders_in_window: HashMap::new(),
-            txns: Some(Vec::new()),
+            txns: Vec::new(),
         }
     }
 
@@ -142,8 +135,6 @@ impl SenderAwarePayloadState {
             // if the start_index is negative, then no sender falls out of the window.
             let sender = self
                 .txns
-                .as_mut()
-                .expect("add transaction called after finalize")
                 .get(self.start_index as usize)
                 .expect("Transaction expected")
                 .sender();
@@ -156,10 +147,7 @@ impl SenderAwarePayloadState {
             .entry(txn.sender())
             .or_insert_with(|| 0);
         *count += 1;
-        self.txns
-            .as_mut()
-            .expect("add transaction called after finalize")
-            .push(txn);
+        self.txns.push(txn);
         self.start_index += 1;
     }
 
@@ -169,9 +157,9 @@ impl SenderAwarePayloadState {
             .map_or(false, |count| *count != 0)
     }
 
-    pub fn finalize(&mut self) -> Vec<SignedTransaction> {
+    pub fn finalize(self) -> Vec<SignedTransaction> {
         NUM_SENDERS_IN_BLOCK.set(self.senders_in_window.len() as f64);
-        self.txns.take().expect("Finalize already called")
+        self.txns
     }
 }
 
@@ -212,7 +200,9 @@ impl TransactionsChunkBySender {
 
 #[cfg(test)]
 mod tests {
-    use crate::payload_generator::{PayloadGenerator, SenderAwarePayloadGenerator};
+    use crate::{
+        sender_aware_shuffler::SenderAwareShuffler, transaction_shuffler::TransactionShuffler,
+    };
     use aptos_crypto::{ed25519::Ed25519PrivateKey, PrivateKey, SigningKey, Uniform};
     use aptos_types::{
         chain_id::ChainId,
@@ -251,16 +241,15 @@ mod tests {
             );
             transactions.push(signed_transaction)
         }
-
         transactions
     }
 
     #[test]
     fn test_single_user_txns() {
-        for i in [5, 50, 500] {
+        for i in [1, 5, 50, 500] {
             let txns = create_signed_transaction(i);
-            let mut payload_generator = SenderAwarePayloadGenerator::new(10, 10);
-            let optimized_txns = payload_generator.gen_payload(txns.clone());
+            let txn_shuffer = SenderAwareShuffler::new(10, 10);
+            let optimized_txns = txn_shuffer.shuffle(txns.clone());
             assert_eq!(txns.len(), optimized_txns.len());
             assert_eq!(txns, optimized_txns)
         }
@@ -277,8 +266,8 @@ mod tests {
             txns.append(&mut sender_txns);
         }
 
-        let mut payload_generator = SenderAwarePayloadGenerator::new(num_senders - 1, 1000);
-        let optimized_txns = payload_generator.gen_payload(txns.clone());
+        let txn_shuffler = SenderAwareShuffler::new(num_senders - 1, 1000);
+        let optimized_txns = txn_shuffler.shuffle(txns.clone());
         assert_eq!(txns.len(), optimized_txns.len());
         let mut sender_index = 0;
         for txn in optimized_txns {
@@ -299,8 +288,8 @@ mod tests {
         }
 
         let now = Instant::now();
-        let mut payload_generator = SenderAwarePayloadGenerator::new(32, 2048);
-        let optimized_txns = payload_generator.gen_payload(txns.clone());
+        let txn_shuffler = SenderAwareShuffler::new(32, 2048);
+        let optimized_txns = txn_shuffler.shuffle(txns.clone());
         println!("elapsed time is {}", now.elapsed().as_millis());
         assert_eq!(txns.len(), optimized_txns.len());
     }
@@ -317,8 +306,8 @@ mod tests {
             orig_txns_by_sender.insert(sender_txns.get(0).unwrap().sender(), sender_txns.clone());
             orig_txns.append(&mut sender_txns);
         }
-        let mut payload_generator = SenderAwarePayloadGenerator::new(num_senders - 1, 100);
-        let optimized_txns = payload_generator.gen_payload(orig_txns.clone());
+        let txn_shuffler = SenderAwareShuffler::new(num_senders - 1, 100);
+        let optimized_txns = txn_shuffler.shuffle(orig_txns.clone());
         let mut optimized_txns_by_sender = HashMap::new();
         for txn in optimized_txns {
             optimized_txns_by_sender
@@ -350,8 +339,8 @@ mod tests {
             orig_txn_set.insert(txn.into_raw_transaction());
         }
 
-        let mut payload_generator = SenderAwarePayloadGenerator::new(num_senders - 1, 100);
-        let optimized_txns = payload_generator.gen_payload(orig_txns.clone());
+        let txn_shuffler = SenderAwareShuffler::new(num_senders - 1, 100);
+        let optimized_txns = txn_shuffler.shuffle(orig_txns.clone());
         let mut optimized_txn_set = HashSet::new();
         assert_eq!(orig_txns.len(), optimized_txns.len());
 
