@@ -55,7 +55,7 @@ impl Default for ExecutionConfigV1 {
     fn default() -> Self {
         Self {
             // TODO(change this to NoShuffling before landing)
-            transaction_shuffler_type: TransactionShufflerType::SenderAwareV1(32, 1024),
+            transaction_shuffler_type: TransactionShufflerType::SenderAwareV1(32, 128),
         }
     }
 }
@@ -71,7 +71,7 @@ pub enum TransactionShufflerType {
 mod test {
     use super::*;
     use crate::on_chain_config::OnChainConfigPayload;
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
 
     #[test]
     fn test_config_yaml_serialization() {

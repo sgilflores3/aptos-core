@@ -9,25 +9,48 @@ use std::{
     collections::{HashMap, VecDeque},
 };
 
+/// An implementation of transaction shuffler, which tries to spread transactions from same senders
+/// in a block in order to reduce conflict. On a high level, it works as follows - It defines a
+/// `conflict_window_size`, which maintains a set of senders added to the block in last `conflict_window_size`
+/// transactions. When trying to select a new transaction to the block, the shuffler tries to find
+/// a transaction which are not part of the conflicting senders in the window. If it does, it adds
+/// the first non-conflicting transaction it finds to the block, if it doesn't then it preserves the
+/// order and adds the first transaction in the remaining block. It always maintains the following
+/// invariant in terms of ordering
+/// 1. Relative ordering of all transactions from the same before and after shuffling is same
+/// 2. Relative ordering of all transactions across different senders will also be maintained if they are
+/// non-conflicting. In other words, if the input block has only one transaction per sender, the output
+/// ordering will remain unchanged.
+///
+/// In order to make the look up faster, it creates an index of contiguous set of transactions by
+/// senders. This makes searching for non-conflicting transactions much faster as compared to brute
+/// force approach.
+///
+/// Another optimization introduced is the `look_ahead_sender_window` - this limits the number of senders
+/// to check to find non-conflicting transactions before giving up. This is needed to ensure the shuffling
+/// is not O(n) even in the worst case.
+
 pub struct SenderAwareShuffler {
     conflict_window_size: usize,
-    look_ahead_window: usize,
+    look_ahead_sender_window: usize,
 }
 
 impl TransactionShuffler for SenderAwareShuffler {
     fn shuffle(&self, txns: Vec<SignedTransaction>) -> Vec<SignedTransaction> {
-        let mut sliding_window = SlidingWindowState::new(self.conflict_window_size);
-
         let _timer = TXN_SHUFFLE_SECONDS.start_timer();
+
+        // maintains the intermediate state of the shuffled transactions
+        let mut sliding_window = SlidingWindowState::new(self.conflict_window_size);
         let num_transactions = txns.len();
         let mut candidate_txn_chunks = self.prepare_txn_chunk_by_senders(txns);
-        for i in 0..num_transactions {
-            let remaining_txns = num_transactions - i;
-            let max_lookup = min(self.look_ahead_window, remaining_txns);
+        for _ in 0..num_transactions {
+            let max_lookup = min(self.look_ahead_sender_window, candidate_txn_chunks.len());
+            // These are the chunks, which are evaluated in each iteration. These needs to be pushed
+            // back to preserve the original order of the transactions after each iteration.
             let mut to_be_pushed_back_chunks = VecDeque::new();
             let mut candidate_found = false;
-            let mut current_index = 0;
-            while current_index < max_lookup {
+            let mut current_sender_index = 0;
+            while current_sender_index < max_lookup {
                 let mut candidate_chunk = candidate_txn_chunks
                     .pop_front()
                     .expect("Expected transaction chunk in the candidate transaction chunk");
@@ -39,17 +62,19 @@ impl TransactionShuffler for SenderAwareShuffler {
                     );
                     candidate_found = true;
                     if !candidate_chunk.is_empty() {
+                        // Non-empty chunk needs to be pushed back again.
                         to_be_pushed_back_chunks.push_front(candidate_chunk)
                     }
                     break;
                 }
-                current_index += candidate_chunk.len();
+                current_sender_index += 1;
                 to_be_pushed_back_chunks.push_front(candidate_chunk);
             }
 
             if !candidate_found {
                 // We didn't find any non-conflicting txn in the look up window. In this case, just
-                // add the first candidate to the block.
+                // add the first candidate to the block. Which can be found by popping the back of the
+                // `to_be_pushed_back_chunks`
                 let mut chunk = to_be_pushed_back_chunks
                     .pop_back()
                     .expect("Expected non empty vector");
@@ -75,13 +100,14 @@ impl TransactionShuffler for SenderAwareShuffler {
 }
 
 impl SenderAwareShuffler {
-    pub fn new(conflict_window_size: usize, look_aheda_window: usize) -> Self {
+    pub fn new(conflict_window_size: usize, look_ahead_sender_window: usize) -> Self {
         Self {
             conflict_window_size,
-            look_ahead_window: look_aheda_window,
+            look_ahead_sender_window,
         }
     }
 
+    // Prepares the index of transaction chunks by sender
     fn prepare_txn_chunk_by_senders(
         &self,
         txns: Vec<SignedTransaction>,
@@ -104,7 +130,7 @@ impl SenderAwareShuffler {
     }
 }
 
-/// A state full data structure maintained by the payload generator during payload shuffling. On a
+/// A state full data structure maintained by the transaction shuffer during shuffling. On a
 /// high level, it maintains a sliding window of the conflicting transactions, which helps the payload
 /// generator include a set of transactions which are non-conflicting with each other within a particular
 /// window size.
@@ -128,8 +154,8 @@ impl SlidingWindowState {
         }
     }
 
-    /// Slides the current window. Essentially, it increments the start_index, end_index and
-    /// updates the senders_in_window map.
+    /// Slides the current window. Essentially, it increments the start_index and
+    /// updates the senders_in_window map if start_index is greater than 0
     pub fn add_transaction(&mut self, txn: SignedTransaction) {
         if self.start_index >= 0 {
             // if the start_index is negative, then no sender falls out of the window.
@@ -183,10 +209,6 @@ impl TransactionsChunkBySender {
 
     pub fn remove_transaction(&mut self) -> Option<SignedTransaction> {
         self.transactions.pop_front()
-    }
-
-    pub fn len(&self) -> usize {
-        self.transactions.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -288,7 +310,7 @@ mod tests {
         }
 
         let now = Instant::now();
-        let txn_shuffler = SenderAwareShuffler::new(32, 2048);
+        let txn_shuffler = SenderAwareShuffler::new(32, 256);
         let optimized_txns = txn_shuffler.shuffle(txns.clone());
         println!("elapsed time is {}", now.elapsed().as_millis());
         assert_eq!(txns.len(), optimized_txns.len());
