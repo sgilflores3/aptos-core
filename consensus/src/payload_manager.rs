@@ -117,6 +117,8 @@ impl PayloadManager {
     }
 
     /// Extract transaction from a given block
+    ///
+    ///
     /// Assumes it is never called for the same block concurrently. Otherwise status can be None.
     ///
     ///

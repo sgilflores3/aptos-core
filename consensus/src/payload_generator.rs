@@ -32,43 +32,70 @@ impl PayloadGenerator for SenderAwarePayloadGenerator {
         let _timer = TXN_SHUFFLE_SECONDS.start_timer();
         let num_transactions = txns.len();
 
-        let mut candidate_txns = VecDeque::new();
+        let mut candidate_txn_chunks = VecDeque::new();
+        let mut prev_sender = None;
         for txn in txns {
-            candidate_txns.push_back(txn)
+            let current_sender = txn.sender();
+            if prev_sender != Some(current_sender) {
+                let txn_chunk = TransactionsChunkBySender::new(current_sender);
+                candidate_txn_chunks.push_back(txn_chunk);
+            }
+            candidate_txn_chunks
+                .back_mut()
+                .unwrap()
+                .add_transaction(txn);
+            prev_sender = Some(current_sender)
         }
         for i in 0..num_transactions {
             let remaining_txns = num_transactions - i;
             let max_lookup = min(self.num_transactions_to_look_ahead, remaining_txns);
-            let mut to_be_pushed_back_txns = VecDeque::new();
+            let mut to_be_pushed_back_chunks = VecDeque::new();
             let mut candidate_found = false;
-            for _ in 0..max_lookup {
-                let candidate = candidate_txns
+            let mut current_index = 0;
+            while current_index < max_lookup {
+                let mut candidate_chunk = candidate_txn_chunks
                     .pop_front()
-                    .expect("Expected transaction in the candidate txns");
-                if !self.sliding_window.has_conflict_in_window(&candidate) {
-                    // Either we find a transaction that has no conflict or we exhaust all the lookup
-                    self.sliding_window.add_transaction(candidate);
+                    .expect("Expected transaction chunk in the candidate transaction chunk");
+                if !self
+                    .sliding_window
+                    .has_conflict_in_window(&candidate_chunk.sender())
+                {
+                    self.sliding_window.add_transaction(
+                        candidate_chunk
+                            .remove_transaction()
+                            .expect("Expected transaction in candidate chunk"),
+                    );
                     candidate_found = true;
+                    if !candidate_chunk.is_empty() {
+                        to_be_pushed_back_chunks.push_front(candidate_chunk)
+                    }
                     break;
-                } else {
-                    to_be_pushed_back_txns.push_front(candidate);
                 }
+                current_index += candidate_chunk.len();
+                to_be_pushed_back_chunks.push_front(candidate_chunk);
             }
 
             if !candidate_found {
                 // We didn't find any non-conflicting txn in the look up window. In this case, just
                 // add the first candidate to the block.
-                let txn = to_be_pushed_back_txns
+                let mut chunk = to_be_pushed_back_chunks
                     .pop_back()
                     .expect("Expected non empty vector");
-                self.sliding_window.add_transaction(txn.clone());
+                self.sliding_window.add_transaction(
+                    chunk
+                        .remove_transaction()
+                        .expect("Empty chunk not expected"),
+                );
+                if !chunk.is_empty() {
+                    to_be_pushed_back_chunks.push_back(chunk)
+                }
             }
 
             // Add the remaining txns to the candidate txns list in the original order.
-            let mut txn = to_be_pushed_back_txns.pop_front();
-            while txn.is_some() {
-                candidate_txns.push_front(txn.unwrap());
-                txn = to_be_pushed_back_txns.pop_front();
+            let mut chunk = to_be_pushed_back_chunks.pop_front();
+            while chunk.is_some() {
+                candidate_txn_chunks.push_front(chunk.unwrap());
+                chunk = to_be_pushed_back_chunks.pop_front();
             }
         }
         self.sliding_window.finalize()
@@ -136,15 +163,50 @@ impl SenderAwarePayloadState {
         self.start_index += 1;
     }
 
-    pub fn has_conflict_in_window(&self, txn: &SignedTransaction) -> bool {
+    pub fn has_conflict_in_window(&self, addr: &AccountAddress) -> bool {
         self.senders_in_window
-            .get(&txn.sender())
+            .get(addr)
             .map_or(false, |count| *count != 0)
     }
 
     pub fn finalize(&mut self) -> Vec<SignedTransaction> {
         NUM_SENDERS_IN_BLOCK.set(self.senders_in_window.len() as f64);
         self.txns.take().expect("Finalize already called")
+    }
+}
+
+/// This represents a contiguous chunk of transactions in a block grouped by the same sender.
+struct TransactionsChunkBySender {
+    sender: AccountAddress,
+    transactions: VecDeque<SignedTransaction>,
+}
+
+impl TransactionsChunkBySender {
+    pub fn new(sender: AccountAddress) -> Self {
+        Self {
+            sender,
+            transactions: VecDeque::new(),
+        }
+    }
+
+    pub fn add_transaction(&mut self, txn: SignedTransaction) {
+        self.transactions.push_back(txn);
+    }
+
+    pub fn remove_transaction(&mut self) -> Option<SignedTransaction> {
+        self.transactions.pop_front()
+    }
+
+    pub fn len(&self) -> usize {
+        self.transactions.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.transactions.is_empty()
+    }
+
+    pub fn sender(&self) -> AccountAddress {
+        self.sender
     }
 }
 
@@ -158,7 +220,10 @@ mod tests {
     };
     use move_core_types::account_address::AccountAddress;
     use rand::{rngs::OsRng, Rng};
-    use std::collections::{HashMap, HashSet};
+    use std::{
+        collections::{HashMap, HashSet},
+        time::Instant,
+    };
 
     fn create_signed_transaction(num_transactions: usize) -> Vec<SignedTransaction> {
         let private_key = Ed25519PrivateKey::generate_for_testing();
@@ -217,10 +282,27 @@ mod tests {
         assert_eq!(txns.len(), optimized_txns.len());
         let mut sender_index = 0;
         for txn in optimized_txns {
-            println!("sender index is {}", sender_index);
             assert_eq!(&txn.sender(), senders.get(sender_index).unwrap());
             sender_index = (sender_index + 1) % senders.len()
         }
+    }
+
+    #[test]
+    fn test_shuffling_benchmark() {
+        let num_senders = 200;
+        let mut txns = Vec::new();
+        let mut senders = Vec::new();
+        for _ in 0..num_senders {
+            let mut sender_txns = create_signed_transaction(10);
+            senders.push(sender_txns.get(0).unwrap().sender());
+            txns.append(&mut sender_txns);
+        }
+
+        let now = Instant::now();
+        let mut payload_generator = SenderAwarePayloadGenerator::new(32, 2048);
+        let optimized_txns = payload_generator.gen_payload(txns.clone());
+        println!("elapsed time is {}", now.elapsed().as_millis());
+        assert_eq!(txns.len(), optimized_txns.len());
     }
 
     #[test]
