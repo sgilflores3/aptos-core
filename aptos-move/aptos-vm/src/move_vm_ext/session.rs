@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    access_path_cache::AccessPathCache, data_cache::MoveResolverWithVMMetadata,
-    move_vm_ext::MoveResolverExt, transaction_metadata::TransactionMetadata,
+    access_path_cache::AccessPathCache,
+    data_cache::MoveResolverWithVMMetadata,
+    move_vm_ext::{MoveResolverExt, MoveVmExt},
+    transaction_metadata::TransactionMetadata,
 };
 use aptos_aggregator::{
     aggregator_extension::AggregatorID,
@@ -20,7 +22,8 @@ use aptos_gas::ChangeSetConfigs;
 use aptos_types::{
     block_metadata::BlockMetadata,
     contract_event::ContractEvent,
-    state_store::{state_key::StateKey, table::TableHandle},
+    on_chain_config::{Features, OnChainConfig},
+    state_store::{state_key::StateKey, state_value::StateValueMetadata, table::TableHandle},
     transaction::{ChangeSet, SignatureCheckedTransaction},
     write_set::{WriteOp, WriteSetMut},
 };
@@ -34,7 +37,7 @@ use move_core_types::{
     vm_status::{StatusCode, VMStatus},
 };
 use move_table_extension::{NativeTableContext, TableChangeSet};
-use move_vm_runtime::{move_vm::MoveVM, session::Session};
+use move_vm_runtime::session::Session;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -91,21 +94,35 @@ impl SessionId {
     pub fn as_uuid(&self) -> HashValue {
         self.hash()
     }
+
+    pub fn sender(&self) -> Option<AccountAddress> {
+        match self {
+            SessionId::Txn { sender, .. } => Some(*sender),
+            SessionId::BlockMeta { .. } | SessionId::Genesis { .. } | SessionId::Void => None,
+        }
+    }
 }
 
 pub struct SessionExt<'r, 'l, S> {
     inner: Session<'r, 'l, S>,
     remote: MoveResolverWithVMMetadata<'r, 'l, S>,
+    new_slot_payer: Option<AccountAddress>,
 }
 
 impl<'r, 'l, S> SessionExt<'r, 'l, S>
 where
     S: MoveResolverExt + 'r,
 {
-    pub fn new(inner: Session<'r, 'l, S>, move_vm: &'l MoveVM, remote: &'r S) -> Self {
+    pub fn new(
+        inner: Session<'r, 'l, S>,
+        move_vm: &'l MoveVmExt,
+        remote: &'r S,
+        new_slot_payer: Option<AccountAddress>,
+    ) -> Self {
         Self {
             inner,
             remote: MoveResolverWithVMMetadata::new(remote, move_vm),
+            new_slot_payer,
         }
     }
 
@@ -127,6 +144,8 @@ where
         let aggregator_change_set = aggregator_context.into_change_set();
 
         Self::convert_change_set(
+            &self.remote,
+            self.new_slot_payer,
             change_set,
             resource_group_change_set,
             events,
@@ -254,6 +273,8 @@ where
     }
 
     pub fn convert_change_set<C: AccessPathCache>(
+        remote: &MoveResolverWithVMMetadata<S>,
+        new_slot_payer: Option<AccountAddress>,
         change_set: MoveChangeSet,
         resource_group_change_set: MoveChangeSet,
         events: Vec<MoveEvent>,
@@ -264,21 +285,40 @@ where
     ) -> Result<ChangeSetExt, VMStatus> {
         let mut write_set_mut = WriteSetMut::new(Vec::new());
         let mut delta_change_set = DeltaChangeSet::empty();
+        let mut new_slot_metadata: Option<StateValueMetadata> = None;
+        // Features can change in the same block or transaction, better load it with the latest view
+        // than passing it down from the beginning of the session.
+        if Features::fetch_config(remote).map_or(false, |features| {
+            features.is_storage_slot_metadata_enabled()
+        }) {
+            if let Some(payer) = new_slot_payer {
+                if let Some(current_time) = remote.current_time() {
+                    new_slot_metadata = Some(StateValueMetadata::new(payer, 0, &current_time));
+                }
+            }
+        }
+        let woc = WriteOpConverter {
+            remote,
+            new_slot_metadata,
+        };
 
         for (addr, account_changeset) in change_set.into_inner() {
             let (modules, resources) = account_changeset.into_inner();
             for (struct_tag, blob_op) in resources {
                 let state_key = StateKey::AccessPath(ap_cache.get_resource_path(addr, struct_tag));
-                let op =
-                    Self::convert_write_op(blob_op, configs.resource_creation_as_modification());
+                let op = woc.convert(
+                    &state_key,
+                    blob_op,
+                    configs.legacy_resource_creation_as_modification(),
+                )?;
+
                 write_set_mut.insert((state_key, op))
             }
 
             for (name, blob_op) in modules {
                 let state_key =
                     StateKey::AccessPath(ap_cache.get_module_path(ModuleId::new(addr, name)));
-                let op = Self::convert_write_op(blob_op, false);
-
+                let op = woc.convert(&state_key, blob_op, false)?;
                 write_set_mut.insert((state_key, op))
             }
         }
@@ -288,7 +328,7 @@ where
             for (struct_tag, blob_op) in resources {
                 let state_key =
                     StateKey::AccessPath(ap_cache.get_resource_group_path(addr, struct_tag));
-                let op = Self::convert_write_op(blob_op, false);
+                let op = woc.convert(&state_key, blob_op, false)?;
                 write_set_mut.insert((state_key, op))
             }
         }
@@ -296,7 +336,7 @@ where
         for (handle, change) in table_change_set.changes {
             for (key, value_op) in change.entries {
                 let state_key = StateKey::table_item(handle.into(), key);
-                let op = Self::convert_write_op(value_op, false);
+                let op = woc.convert(&state_key, value_op, false)?;
                 write_set_mut.insert((state_key, op))
             }
         }
@@ -308,12 +348,13 @@ where
 
             match change {
                 AggregatorChange::Write(value) => {
-                    let write_op = WriteOp::Modification(serialize(&value));
+                    let write_op =
+                        woc.convert(&state_key, MoveStorageOp::Modify(serialize(&value)), false)?;
                     write_set_mut.insert((state_key, write_op));
                 },
                 AggregatorChange::Merge(delta_op) => delta_change_set.insert((state_key, delta_op)),
                 AggregatorChange::Delete => {
-                    let write_op = WriteOp::Deletion;
+                    let write_op = woc.convert(&state_key, MoveStorageOp::Delete, false)?;
                     write_set_mut.insert((state_key, write_op));
                 },
             }
@@ -339,26 +380,6 @@ where
             Arc::new(configs.clone()),
         ))
     }
-
-    fn convert_write_op(
-        move_storage_op: MoveStorageOp<Vec<u8>>,
-        creation_as_modification: bool,
-    ) -> WriteOp {
-        use MoveStorageOp::*;
-        use WriteOp::*;
-
-        match move_storage_op {
-            Delete => Deletion,
-            New(blob) => {
-                if creation_as_modification {
-                    Modification(blob)
-                } else {
-                    Creation(blob)
-                }
-            },
-            Modify(blob) => Modification(blob),
-        }
-    }
 }
 
 impl<'r, 'l, S> Deref for SessionExt<'r, 'l, S> {
@@ -372,5 +393,63 @@ impl<'r, 'l, S> Deref for SessionExt<'r, 'l, S> {
 impl<'r, 'l, S> DerefMut for SessionExt<'r, 'l, S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
+    }
+}
+
+struct WriteOpConverter<'r, 'l, S> {
+    remote: &'r MoveResolverWithVMMetadata<'r, 'l, S>,
+    new_slot_metadata: Option<StateValueMetadata>,
+}
+
+impl<'r, 'l, S: MoveResolverExt> WriteOpConverter<'r, 'l, S> {
+    fn convert(
+        &self,
+        state_key: &StateKey,
+        move_storage_op: MoveStorageOp<Vec<u8>>,
+        legacy_creation_as_modification: bool,
+    ) -> Result<WriteOp, VMStatus> {
+        use MoveStorageOp::*;
+        use WriteOp::*;
+
+        let existing_value_opt = self
+            .remote
+            .get_state_value(state_key)
+            .map_err(|_| VMStatus::Error(StatusCode::STORAGE_ERROR))?;
+
+        let write_op = match (existing_value_opt, move_storage_op) {
+            (None, Modify(_) | Delete) | (Some(_), New(_)) => {
+                return Err(VMStatus::Error(
+                    StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
+                ))
+            },
+            (None, New(data)) => match &self.new_slot_metadata {
+                None => {
+                    if legacy_creation_as_modification {
+                        Modification(data)
+                    } else {
+                        Creation(data)
+                    }
+                },
+                Some(metadata) => CreationWithMetadata {
+                    data,
+                    metadata: metadata.clone(),
+                },
+            },
+            (Some(existing_value), Modify(data)) => {
+                // Inherit metadata even if the feature flags is turned off, for compatibility.
+                match existing_value.into_metadata() {
+                    None => Modification(data),
+                    Some(metadata) => ModificationWithMetadata { data, metadata },
+                }
+            },
+            (Some(existing_value), Delete) => {
+                // Inherit metadata even if the feature flags is turned off, for compatibility.
+                match existing_value.into_metadata() {
+                    None => Deletion,
+                    Some(metadata) => DeletionWithMetadata { metadata },
+                }
+            },
+        };
+        Ok(write_op)
     }
 }

@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Scratchpad for on chain values during the execution.
 
-use crate::move_vm_ext::MoveResolverExt;
+use crate::move_vm_ext::{MoveResolverExt, MoveVmExt};
 #[allow(unused_imports)]
 use anyhow::Error;
 use aptos_framework::{natives::state_storage::StateStorageUsageResolver, RuntimeModuleMetadataV1};
 use aptos_state_view::StateView;
 use aptos_types::{
     access_path::AccessPath,
-    on_chain_config::ConfigStorage,
+    on_chain_config::{ConfigStorage, CurrentTimeMicroseconds},
     state_store::{state_key::StateKey, state_storage_usage::StateStorageUsage},
 };
 use move_binary_format::{errors::*, CompiledModule};
@@ -20,20 +20,28 @@ use move_core_types::{
     vm_status::StatusCode,
 };
 use move_table_extension::{TableHandle, TableResolver};
-use move_vm_runtime::move_vm::MoveVM;
 use std::ops::{Deref, DerefMut};
 
 pub struct MoveResolverWithVMMetadata<'a, 'm, S> {
     move_resolver: &'a S,
-    move_vm: &'m MoveVM,
+    move_vm: &'m MoveVmExt,
 }
 
 impl<'a, 'm, S: MoveResolverExt> MoveResolverWithVMMetadata<'a, 'm, S> {
-    pub fn new(move_resolver: &'a S, move_vm: &'m MoveVM) -> Self {
+    pub fn new(move_resolver: &'a S, move_vm: &'m MoveVmExt) -> Self {
         Self {
             move_resolver,
             move_vm,
         }
+    }
+
+    pub fn vm(&self) -> &MoveVmExt {
+        self.move_vm
+    }
+
+    pub fn current_time(&self) -> Option<CurrentTimeMicroseconds> {
+        todo!()
+        // CurrentTimeMicroseconds::fetch_config(self.move_resolver.)
     }
 }
 
