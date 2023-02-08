@@ -68,7 +68,6 @@ impl PayloadGenerator for SenderAwarePayloadGenerator {
             let mut txn = to_be_pushed_back_txns.pop_front();
             while txn.is_some() {
                 candidate_txns.push_front(txn.unwrap());
-
                 txn = to_be_pushed_back_txns.pop_front();
             }
         }
@@ -213,11 +212,12 @@ mod tests {
             txns.append(&mut sender_txns);
         }
 
-        let mut payload_generator = SenderAwarePayloadGenerator::new(num_senders - 1, 100);
+        let mut payload_generator = SenderAwarePayloadGenerator::new(num_senders - 1, 1000);
         let optimized_txns = payload_generator.gen_payload(txns.clone());
         assert_eq!(txns.len(), optimized_txns.len());
         let mut sender_index = 0;
         for txn in optimized_txns {
+            println!("sender index is {}", sender_index);
             assert_eq!(&txn.sender(), senders.get(sender_index).unwrap());
             sender_index = (sender_index + 1) % senders.len()
         }

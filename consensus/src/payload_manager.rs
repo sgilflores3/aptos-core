@@ -112,12 +112,14 @@ impl PayloadManager {
         &self,
         block: &Block,
     ) -> Result<Vec<SignedTransaction>, Error> {
-        let mut payload_generator = SenderAwarePayloadGenerator::new(20, 10);
+        let mut payload_generator = SenderAwarePayloadGenerator::new(32, 1024);
         Ok(payload_generator.gen_payload(self.get_transactions(block).await?))
     }
 
     /// Extract transaction from a given block
     /// Assumes it is never called for the same block concurrently. Otherwise status can be None.
+    ///
+    ///
     async fn get_transactions(&self, block: &Block) -> Result<Vec<SignedTransaction>, Error> {
         let payload = match block.payload() {
             Some(p) => p,
