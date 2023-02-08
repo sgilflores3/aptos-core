@@ -39,17 +39,37 @@ impl PayloadGenerator for SenderAwarePayloadGenerator {
         for i in 0..num_transactions {
             let remaining_txns = num_transactions - i;
             let max_lookup = min(self.num_transactions_to_look_ahead, remaining_txns);
-            for j in 0..max_lookup {
+            let mut to_be_pushed_back_txns = VecDeque::new();
+            let mut candidate_found = false;
+            for _ in 0..max_lookup {
                 let candidate = candidate_txns
                     .pop_front()
                     .expect("Expected transaction in the candidate txns");
-                if !self.sliding_window.has_conflict_in_window(&candidate) || j == max_lookup - 1 {
+                if !self.sliding_window.has_conflict_in_window(&candidate) {
                     // Either we find a transaction that has no conflict or we exhaust all the lookup
                     self.sliding_window.add_transaction(candidate);
+                    candidate_found = true;
                     break;
                 } else {
-                    candidate_txns.push_back(candidate);
+                    to_be_pushed_back_txns.push_front(candidate);
                 }
+            }
+
+            if !candidate_found {
+                // We didn't find any non-conflicting txn in the look up window. In this case, just
+                // add the first candidate to the block.
+                let txn = to_be_pushed_back_txns
+                    .pop_back()
+                    .expect("Expected non empty vector");
+                self.sliding_window.add_transaction(txn.clone());
+            }
+
+            // Add the remaining txns to the candidate txns list in the original order.
+            let mut txn = to_be_pushed_back_txns.pop_front();
+            while txn.is_some() {
+                candidate_txns.push_front(txn.unwrap());
+
+                txn = to_be_pushed_back_txns.pop_front();
             }
         }
         self.sliding_window.finalize()
@@ -139,7 +159,7 @@ mod tests {
     };
     use move_core_types::account_address::AccountAddress;
     use rand::{rngs::OsRng, Rng};
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     fn create_signed_transaction(num_transactions: usize) -> Vec<SignedTransaction> {
         let private_key = Ed25519PrivateKey::generate_for_testing();
@@ -173,10 +193,11 @@ mod tests {
 
     #[test]
     fn test_single_user_txns() {
-        for i in [5, 10, 100] {
+        for i in [5, 50, 500] {
             let txns = create_signed_transaction(i);
             let mut payload_generator = SenderAwarePayloadGenerator::new(10, 10);
             let optimized_txns = payload_generator.gen_payload(txns.clone());
+            assert_eq!(txns.len(), optimized_txns.len());
             assert_eq!(txns, optimized_txns)
         }
     }
@@ -199,6 +220,33 @@ mod tests {
         for txn in optimized_txns {
             assert_eq!(&txn.sender(), senders.get(sender_index).unwrap());
             sender_index = (sender_index + 1) % senders.len()
+        }
+    }
+
+    #[test]
+    fn test_same_sender_relative_order() {
+        let mut rng = OsRng;
+        let max_txn_per_sender = 100;
+        let num_senders = 100;
+        let mut orig_txns = Vec::new();
+        let mut orig_txns_by_sender = HashMap::new();
+        for _ in 0..num_senders {
+            let mut sender_txns = create_signed_transaction(rng.gen_range(1, max_txn_per_sender));
+            orig_txns_by_sender.insert(sender_txns.get(0).unwrap().sender(), sender_txns.clone());
+            orig_txns.append(&mut sender_txns);
+        }
+        let mut payload_generator = SenderAwarePayloadGenerator::new(num_senders - 1, 100);
+        let optimized_txns = payload_generator.gen_payload(orig_txns.clone());
+        let mut optimized_txns_by_sender = HashMap::new();
+        for txn in optimized_txns {
+            optimized_txns_by_sender
+                .entry(txn.sender())
+                .or_insert_with(Vec::new)
+                .push(txn);
+        }
+
+        for (sender, orig_txns) in orig_txns_by_sender {
+            assert_eq!(optimized_txns_by_sender.get(&sender).unwrap(), &orig_txns)
         }
     }
 
