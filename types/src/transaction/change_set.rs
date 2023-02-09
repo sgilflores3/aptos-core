@@ -1,7 +1,10 @@
 // Copyright (c) Aptos
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{contract_event::ContractEvent, write_set::WriteSet};
+use crate::{
+    contract_event::ContractEvent,
+    write_set::{WriteSet, WriteSetMut},
+};
 use move_core_types::vm_status::VMStatus;
 use serde::{Deserialize, Serialize};
 
@@ -46,5 +49,15 @@ impl ChangeSet {
 
     pub fn events(&self) -> &[ContractEvent] {
         &self.events
+    }
+
+    pub fn mutate_write_set(
+        &mut self,
+        mutator: impl FnOnce(WriteSetMut) -> Result<WriteSet, VMStatus>,
+    ) -> Result<(), VMStatus> {
+        let mut write_set = WriteSet::default();
+        std::mem::swap(&mut write_set, &mut self.write_set);
+        self.write_set = mutator(write_set.into_mut())?;
+        Ok(())
     }
 }

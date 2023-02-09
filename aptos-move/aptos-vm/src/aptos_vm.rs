@@ -295,6 +295,11 @@ impl AptosVM {
             .squash(epilogue_change_set_ext)
             .map_err(|_err| VMStatus::Error(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR))?;
 
+        // epilogues shouldn't allocate new slots or deleting existing one (because deposits and
+        // refunds have already been processed, processing again is not only tricky, but also
+        // possible to yield aborts.
+        gas_meter.storage_pricing.warn_on_slot_creation_or_deletion(&change_set_ext)?;
+
         let (delta_change_set, change_set) = change_set_ext.into_inner();
         let (write_set, events) = change_set.into_inner();
 
@@ -395,9 +400,10 @@ impl AptosVM {
                 new_published_modules_loaded,
             )?;
 
-            let change_set_ext = session
+            let mut change_set_ext = session
                 .finish(&mut (), gas_meter.change_set_configs())
                 .map_err(|e| e.into_vm_status())?;
+            let epilogue_session = gas_meter.storage_pricing().calcualte_deposit_and_update_write_set(&mut change_set_ext);
 
             // Charge gas for write set
             gas_meter.charge_write_set_gas(change_set_ext.write_set().iter())?;
@@ -409,6 +415,7 @@ impl AptosVM {
                 gas_meter,
                 txn_data,
                 log_context,
+                epilogue_session,
             )
         }
     }

@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::delta_change_set::{deserialize, DeltaChangeSet};
-use anyhow::bail;
+use anyhow::{bail, Result};
 use aptos_state_view::StateView;
 use aptos_types::{
     transaction::{ChangeSet, CheckChangeSet, TransactionOutput},
     write_set::{TransactionWrite, WriteOp, WriteSet, WriteSetMut},
 };
 use std::{collections::btree_map, sync::Arc};
+use move_core_types::vm_status::VMStatus;
 
 /// Helpful trait for e.g. extracting u128 value out of TransactionWrite that we know is
 /// for aggregator (i.e. if we have seen a DeltaOp for the same access path).
@@ -59,7 +60,7 @@ impl ChangeSetExt {
         (self.delta_change_set, self.change_set)
     }
 
-    pub fn squash_delta_change_set(self, other: DeltaChangeSet) -> anyhow::Result<Self> {
+    pub fn squash_delta_change_set(self, other: DeltaChangeSet) -> Result<Self> {
         use btree_map::Entry::*;
         use WriteOp::*;
 
@@ -120,7 +121,7 @@ impl ChangeSetExt {
         })
     }
 
-    pub fn squash_change_set(self, other: ChangeSet) -> anyhow::Result<Self> {
+    pub fn squash_change_set(self, other: ChangeSet) -> Result<Self> {
         use btree_map::Entry::*;
 
         let checker = self.checker.clone();
@@ -154,10 +155,17 @@ impl ChangeSetExt {
         })
     }
 
-    pub fn squash(self, other: Self) -> anyhow::Result<Self> {
+    pub fn squash(self, other: Self) -> Result<Self> {
         let (delta_change_set, change_set) = other.into_inner();
         self.squash_change_set(change_set)?
             .squash_delta_change_set(delta_change_set)
+    }
+
+    pub fn mutate_write_set(
+        &mut self,
+        mutator: impl FnOnce(WriteSetMut) -> Result<WriteSet>,
+    ) -> Result<(), VMStatus> {
+        self.change_set.mutate_write_set(mutator)
     }
 }
 
