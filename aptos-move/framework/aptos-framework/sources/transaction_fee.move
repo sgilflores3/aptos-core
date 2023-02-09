@@ -11,6 +11,7 @@ module aptos_framework::transaction_fee {
     friend aptos_framework::genesis;
     friend aptos_framework::reconfiguration;
     friend aptos_framework::transaction_validation;
+    friend aptos_framework::storage_deposit;
 
     /// Gas fees are already being collected and the struct holding
     /// information about collected amounts is already published.
