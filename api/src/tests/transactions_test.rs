@@ -26,7 +26,6 @@ use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use serde_json::json;
 use std::path::PathBuf;
 
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_deserialize_genesis_transaction() {
     let context = new_test_context(current_function_name!());
@@ -844,6 +843,7 @@ async fn test_get_txn_execute_failed_by_entry_function_execution_failure() {
                 .as_str(),
         )
         .await;
+
     assert!(
         !resp["success"].as_bool().unwrap(),
         "{}",
