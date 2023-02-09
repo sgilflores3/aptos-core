@@ -25,9 +25,9 @@ async fn test_read_resource_group() {
 
     // Prepare accounts
     let mut root = context.root_account();
-    let mut admin0 = create_account(&mut context, &mut root).await;
-    let mut admin1 = create_account(&mut context, &mut root).await;
-    let mut user = create_account(&mut context, &mut root).await;
+    let mut admin0 = context.create_account(&mut root).await;
+    let mut admin1 = context.create_account(&mut root).await;
+    let mut user = context.create_account(&mut root).await;
 
     // Publish packages
     let named_addresses = vec![
@@ -105,26 +105,5 @@ async fn test_read_resource_group() {
 
    let response = context.maybe_read_resource(&user.address(), &secondary).await;
    assert_eq!(response.unwrap()["data"]["value"], 55);
-}
-
-// TODO: The TestContext code is a bit of a mess, the following likely should be added and that
-// code likely needs a good cleanup to merge to a common approach.
-
-async fn create_account(context: &mut TestContext, root: &mut LocalAccount) -> LocalAccount {
-    let account = context.gen_account();
-    let factory = context.transaction_factory();
-    let txn = root.sign_with_transaction_builder(
-        factory
-            .account_transfer(account.address(), 10_000_000)
-            .expiration_timestamp_secs(u64::MAX),
-    );
-
-    let bcs_txn = bcs::to_bytes(&txn).unwrap();
-    context
-        .expect_status_code(202)
-        .post_bcs_txn("/transactions", bcs_txn)
-        .await;
-    context.commit_mempool_txns(1).await;
-    account
 }
 
