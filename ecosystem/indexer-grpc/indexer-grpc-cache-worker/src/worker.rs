@@ -39,6 +39,13 @@ impl Worker {
     pub async fn run(&mut self) {
         // Re-connect if lost.
         // TODO: Add a restart from file store.
+        // TODO: fix the chain id verification.
+        let mut conn = self.redis_client.get_connection().unwrap();
+        let chain_id_exists: bool = conn.exists(format!("chain_id")).unwrap();
+        if !chain_id_exists {
+            conn.set::<&str, u32, ()>("chain_id", self.chain_id).unwrap();
+        }
+
         loop {
             let conn = self.redis_client.get_connection().unwrap();
             let mut rpc_client = create_grpc_client(self.grpc_address.clone()).await;
