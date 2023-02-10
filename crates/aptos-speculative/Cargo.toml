@@ -17,8 +17,8 @@ rust-version = { workspace = true }
 [dependencies]
 anyhow = { workspace = true }
 aptos-infallible = { workspace = true }
-once_cell = { workspace = true }
 crossbeam = { workspace = true }
+once_cell = { workspace = true }
 rayon = { workspace = true }
 
 [dev-dependencies]
