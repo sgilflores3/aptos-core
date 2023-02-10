@@ -43,13 +43,7 @@ impl Default for DatastreamServer {
     }
 }
 
-// DatastreamServer handles the raw datastream requests.
-//  <a>. It creates a streaming connection, and:
-//      1. Try to get the cache coverage status and fetch the data if available.
-//      2. If the cache coverage status is not ready, it'll wait and retry.
-//      3. If the cache coverage status is not available, it'll fetch the data from the file store.
-//  <b>. When streaming connection closes, retry from <a>.
-// TODO(larry): add the channel back-pressure to avoid server OOM.
+// DatastreamServer handles the raw datastream requests from cache and file store.
 #[tonic::async_trait]
 impl IndexerStream for DatastreamServer {
     type RawDatastreamStream = ResponseStream;
@@ -80,6 +74,10 @@ impl IndexerStream for DatastreamServer {
                     break;
                 }
 
+                // Get the cache coverage status.
+                //  1. If the cache coverage status is CacheHit, it'll fetch the data from the cache.
+                //  2. If the cache coverage status is CacheEvicted, it'll fetch the data from the file store.
+                //  3. If the cache coverage status is DataNotReady, it'll wait and retry.
                 let cache_coverage_status = get_cache_coverage_status(&mut conn, current_version)
                     .await
                     .expect("[Indexer Data] Failed to get cache coverage status.");
@@ -97,7 +95,7 @@ impl IndexerStream for DatastreamServer {
                     },
 
                     CacheCoverageStatus::DataNotReady => {
-                        sleep(Duration::from_millis(100));
+                        sleep(Duration::from_millis(1000));
                         continue;
                     },
                     CacheCoverageStatus::CacheHit => {

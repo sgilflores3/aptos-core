@@ -41,9 +41,10 @@ impl Worker {
         // TODO: Add a restart from file store.
         // TODO: fix the chain id verification.
         let mut conn = self.redis_client.get_connection().unwrap();
-        let chain_id_exists: bool = conn.exists(format!("chain_id")).unwrap();
+        let chain_id_exists: bool = conn.exists("chain_id").unwrap();
         if !chain_id_exists {
-            conn.set::<&str, u32, ()>("chain_id", self.chain_id).unwrap();
+            conn.set::<&str, u32, ()>("chain_id", self.chain_id)
+                .unwrap();
         }
 
         loop {

@@ -12,6 +12,7 @@ const CACHE_SIZE_ESTIMATION: u64 = 10_000_000_u64;
 
 pub const BLOB_STORAGE_SIZE: u64 = 1_000;
 
+// This is an Enum to indicate the cache status of the requested version.
 pub enum CacheCoverageStatus {
     // Requested version is not processed by cache worker yet.
     DataNotReady,
@@ -48,6 +49,8 @@ pub async fn update_cache_latest_version(
         .map_err(|e| e.into())
 }
 
+// This function is used to check the cache status of the requested version.
+// The CacheEvicted is only an estimation from current latest version.
 pub async fn get_cache_coverage_status(
     conn: &mut impl redis::ConnectionLike,
     requested_version: u64,
@@ -56,9 +59,18 @@ pub async fn get_cache_coverage_status(
         Ok(v) => v,
         Err(err) => return Err(err.into()),
     };
-    if requested_version + BLOB_STORAGE_SIZE > latest_version {
+
+    let request_batch_upper_bound = requested_version + BLOB_STORAGE_SIZE;
+    // Estimated cache lower bound is the latest version minus the cache size estimation; default to
+    // 0.
+    let estimated_cache_lower_bound =
+        std::cmp::max(latest_version, CACHE_SIZE_ESTIMATION) - CACHE_SIZE_ESTIMATION;
+    if request_batch_upper_bound > latest_version {
+        // The cache should contain [requested_version, requested_version + BLOB_STORAGE_SIZE),
+        // if upper bound is not covered, then the data is not ready.
         Ok(CacheCoverageStatus::DataNotReady)
-    } else if requested_version + CACHE_SIZE_ESTIMATION < latest_version {
+    } else if estimated_cache_lower_bound < requested_version {
+        // If request version lower bound is smaller than latest version, it means the data is evicted.
         Ok(CacheCoverageStatus::CacheEvicted)
     } else {
         Ok(CacheCoverageStatus::CacheHit)
