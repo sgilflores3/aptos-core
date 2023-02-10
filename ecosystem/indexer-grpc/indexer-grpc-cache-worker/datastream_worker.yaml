@@ -1,0 +1,4 @@
+indexer_address: 127.0.0.1:50051
+redis_address: 127.0.0.1:6379
+starting_version: 0
+chain_id: 43
