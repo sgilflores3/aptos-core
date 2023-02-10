@@ -22,10 +22,9 @@ async fn test_read_resource_group() {
     let mut context = new_test_context(current_function_name!());
 
     // Prepare accounts
-    let mut root = context.root_account();
-    let mut admin0 = context.create_account(&mut root).await;
-    let mut admin1 = context.create_account(&mut root).await;
-    let mut user = context.create_account(&mut root).await;
+    let mut admin0 = context.create_account().await;
+    let mut admin1 = context.create_account().await;
+    let mut user = context.create_account().await;
 
     // Publish packages
     let named_addresses = vec![
